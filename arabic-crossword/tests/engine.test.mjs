@@ -28,6 +28,20 @@ test("all ten units generate 15-word connected compact grids",()=>{
   }
 });
 
+test("published content is an editorially verified, unique 150-answer set",()=>{
+  const entries=PUBLISHED_UNITS.flatMap(unit=>unit.entries);
+  assert.equal(entries.length,150);
+  assert.ok(entries.every(entry=>entry.verified===true));
+  const normalized=new Set(entries.map(entry=>normalizeArabic(entry.answer)));
+  assert.equal(normalized.size,150);
+  const hard=entries.filter(entry=>entry.difficulty>=4).length;
+  const medium=entries.filter(entry=>entry.difficulty===2||entry.difficulty===3).length;
+  const easy=entries.filter(entry=>entry.difficulty===1).length;
+  assert.ok(hard>=55&&hard<=65, "hard entries should be about 40% of the set");
+  assert.ok(medium>=55&&medium<=65, "medium entries should be about 40% of the set");
+  assert.ok(easy>=24&&easy<=34, "easy entries should be about 20% of the set");
+});
+
 test("bank tile state consumes and returns the exact same tile multiset",()=>{
   const bank=createBankState({id:"bank-state",answer:"سوس",difficulty:2});
   const original=bank.tiles.map(tile=>tile.letter).sort();

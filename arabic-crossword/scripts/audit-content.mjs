@@ -26,3 +26,11 @@ if(duplicates.length){
   console.error("Duplicate normalized answers found.");
   process.exitCode=1;
 }
+if(PUBLISHED_UNITS.length!==10||all.length!==150){
+  console.error("Published content must contain exactly 10 units and 150 answers.");
+  process.exitCode=1;
+}
+if(all.some(item=>!item.verified)){
+  console.error("Every published answer must have editorial verification.");
+  process.exitCode=1;
+}

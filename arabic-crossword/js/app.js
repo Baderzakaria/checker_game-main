@@ -74,22 +74,14 @@ function renderHome(){
   const xp=state.xp||0, level=state.level||1;
   const slots=unitSlots(state);
 
-  const doorCards=Object.entries(CATEGORIES).map(([id,c])=>{
-    const m=state.mastery?.[id];
-    const rating=m?.rating||1000;
-    const detail=m?`إتقان ${pct(rating)}% · ${m.attempts} محاولة`:"ابدأ اللعب ليظهر تقدّمك";
-    return `<article class="door">
-      <span class="icon">${c.icon}</span>
-      <div><b>${esc(c.label)}</b><small>${detail}</small></div>
-    </article>`;
-  }).join("");
-
   const unitCards=slots.map(u=>{
     const lock=!u.published;
+    const lead=u.published?getUnit(u.id)?.entries?.[0]:null;
+    const category=lead&&CATEGORIES[lead.category];
     return `<button type="button" class="unit ${lock?"locked":""} ${u.done?"done":""}" data-unit="${u.id}" ${lock?"disabled":""}>
       <span class="n">${String(u.id).padStart(2,"0")}</span>
       <span class="pill">${u.done?"✓ مكتملة":u.published?"جاهزة":"قيد التحرير"}</span>
-      <small>${esc(u.title)}<br>${esc(u.subtitle)}</small>
+      <small>${esc(u.title)}<br>${esc(u.subtitle)}${category?`<br><em class="unit-category">${category.icon} ${esc(category.label)}</em>`:""}</small>
     </button>`;
   }).join("");
 
@@ -120,10 +112,7 @@ function renderHome(){
       </aside>
     </section>
 
-    <div class="section-head"><div><h2>أبواب المعرفة</h2></div></div>
-    <section class="doors">${doorCards}</section>
-
-    <div class="section-head" id="units"><div><h2>الوحدات</h2></div></div>
+    <div class="section-head" id="units"><div><h2>اختر وحدة</h2><p>ابدأ مباشرة من أي وحدة منشورة.</p></div></div>
     <section class="units">${unitCards}</section>
   `);
 
@@ -191,15 +180,17 @@ function renderGame(unitId){
         continue;
       }
       const value=session.cells[ck(r,c)]||"";
+      const masked=Boolean(state.settings?.hideSolved&&!session.completed&&solvedCells.has(ck(r,c)));
       const cls=[
         "cell",
         active.has(ck(r,c))?"in-word":"",
         solvedCells.has(ck(r,c))?"correct":"",
+        masked?"masked":"",
         word.coords.some(x=>x.r===r&&x.c===c)?"active":"",
         word.coords[activeCellIndex]?.r===r&&word.coords[activeCellIndex]?.c===c?"cursor":""
       ].filter(Boolean).join(" ");
       gridHtml+=`<button type="button" class="${cls}" data-cell="${r},${c}" aria-label="خانة ${cell.number?cell.number:""} ${value||"فارغة"}">
-        ${cell.number?`<span class="num">${cell.number}</span>`:""}<span>${esc(value)}</span>
+        ${cell.number?`<span class="num">${cell.number}</span>`:""}<span>${masked?"✓":esc(value)}</span>
       </button>`;
     }
   }
@@ -249,12 +240,12 @@ function renderGame(unitId){
       <main class="word-view-body">
         <div class="answer-slots" dir="rtl">${wordSlots}</div>
         ${succeeded?'<p class="word-success" role="status">أحسنت</p>':""}
-        <div class="word-actions"><button type="button" class="btn soft" id="hint-btn">تلميح</button><button type="button" class="btn" id="clear-word-btn">🧹 مسح</button></div>
       </main>
       <section class="letter-bank word-letter-bank ${failed?"bank-wrong":""}" aria-label="بنك الحروف">
         <span class="bank-label">اختر الحروف</span>
         <div class="bank-tiles">${bank.tiles.map((tile,i)=>`<button type="button" class="letter-tile ${used.has(tile.id)?"used":""}" style="--tile-delay:${i * 24}ms" data-tile="${tile.id}" data-letter="${esc(tile.letter)}" aria-label="الحرف ${esc(tile.letter)}" ${used.has(tile.id)?"disabled":""}>${esc(tile.letter)}</button>`).join("")}</div>
       </section>
+      <div class="word-actions" aria-label="إجراءات الكلمة"><button type="button" class="btn" id="clear-word-btn">🧹 مسح</button><button type="button" class="btn soft" id="hint-btn">💡 تلميح</button><button type="button" class="btn primary" id="next-word-btn">التالي ⏭</button></div>
     </section>`:"";
   appEl.innerHTML=shell(`
     <section class="game-head">
@@ -330,8 +321,8 @@ function renderGame(unitId){
     renderGame(unit.id);
   }
   function checkCompletedWord(){
-    if(!word.coords.every(x=>session.cells[ck(x.r,x.c)])) return;
-    if(wordValue(word,session)===word.chars.join("")){ solveWord(word,false); return; }
+    if(!word.coords.every(x=>session.cells[ck(x.r,x.c)])) return false;
+    if(wordValue(word,session)===word.chars.join("")){ solveWord(word,false); return true; }
     session.mistakes++;
     gameFeedback={unitId:unit.id,wordId:word.entry.id,type:"wrong"};
     persist(); renderGame(unit.id);
@@ -339,6 +330,18 @@ function renderGame(unitId){
       if(gameFeedback?.unitId!==unit.id||gameFeedback?.wordId!==word.entry.id||gameFeedback?.type!=="wrong") return;
       clearCurrentWord();
     },520);
+    return true;
+  }
+  function patchWordEntry(slotIndex,tileId,char){
+    const slot=document.querySelector(`[data-slot="${slotIndex}"]`);
+    if(slot){
+      slot.textContent=char;
+      slot.disabled=false;
+      slot.classList.add("filled","just-filled");
+      requestAnimationFrame(()=>slot.classList.remove("just-filled"));
+    }
+    const tile=document.querySelector(`[data-tile="${tileId}"]`);
+    if(tile){tile.disabled=true;tile.classList.add("used");}
   }
   function writeLetter(raw,tileId){
     const char=Array.from(normalizeArabic(raw))[0];
@@ -353,8 +356,7 @@ function renderGame(unitId){
     persist();
     const next=nextCellInWord(word,activeCellIndex,1);
     activeCellIndex=next===activeCellIndex?activeCellIndex:next;
-    checkCompletedWord();
-    if(!gameFeedback) queueRender();
+    if(!checkCompletedWord()) patchWordEntry(targetIndex,tileId,char);
   }
   function solveWord(target,force=false){
     if(!session.solved[target.entry.id]){
@@ -386,12 +388,12 @@ function renderGame(unitId){
     gameFeedback={unitId:unit.id,wordId:target.entry.id,type:"success"};
     persist();
     renderGame(unit.id);
-    // Let the successful answer register, then return to the board. The
-    // player explicitly chooses the next word.
+    // A solved answer gets a brief confirmation, then the next unsolved word
+    // opens without sending the player back through the board.
     setTimeout(()=>{
-      wordViewOpen=false;
+      const next=grid.placed.find(w=>!session.solved[w.entry.id]);
       gameFeedback=null;
-      renderGame(unit.id);
+      if(next) setActive(next.entry.id,0,true);
     },620);
     return true;
   }
@@ -409,6 +411,13 @@ function renderGame(unitId){
     activeCellIndex=i; refresh(); checkCompletedWord();
   });
   document.querySelector("#clear-word-btn")?.addEventListener("click",clearCurrentWord);
+  document.querySelector("#next-word-btn")?.addEventListener("click",()=>{
+    const pending=grid.placed.filter(w=>!session.solved[w.entry.id]);
+    const here=pending.findIndex(w=>w.entry.id===word.entry.id);
+    const next=pending[(here+1+pending.length)%pending.length];
+    if(next&&next.entry.id!==word.entry.id) setActive(next.entry.id,0,true);
+    else toast("هذه آخر كلمة غير محلولة");
+  });
   document.querySelectorAll("[data-word]").forEach(el=>el.addEventListener("click",()=>setActive(el.dataset.word,0,true)));
   document.querySelectorAll("[data-cell]").forEach(el=>el.addEventListener("click",()=>{
     const [r,c]=el.dataset.cell.split(",").map(Number);
@@ -489,6 +498,8 @@ function renderProfile(){
         <p class="muted">${accountText}</p>
         ${user?'<button type="button" class="btn danger" id="logout-btn">تسجيل الخروج</button>':'<button type="button" class="btn" data-route="login">تسجيل الدخول</button>'}
         <div class="sep"></div>
+        <div class="field setting-row"><label for="hide-solved">إخفاء الحلول</label><input id="hide-solved" type="checkbox" ${state.settings?.hideSolved?"checked":""} /><small class="muted">يبقي حروف الكلمات المحلولة مخفية على اللوحة حتى احتفال إكمال الوحدة.</small></div>
+        <div class="sep"></div>
         <div class="stats">
           <div class="stat"><b>${completedCount()}</b><span>وحدة مكتملة</span></div>
           <div class="stat"><b>${state.xp||0}</b><span>XP</span></div>
@@ -510,6 +521,11 @@ function renderProfile(){
     await signOut();
     toast("تم تسجيل الخروج");
     renderProfile();
+  });
+  document.querySelector("#hide-solved")?.addEventListener("change",event=>{
+    state.settings={...(state.settings||{}),hideSolved:event.target.checked};
+    saveState(state);
+    toast(event.target.checked?"فُعّل إخفاء الحلول":"أُظهرَت الحلول على اللوحة");
   });
 }
 
