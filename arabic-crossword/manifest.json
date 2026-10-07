@@ -1,0 +1,11 @@
+{
+  "name": "كلمات — كلمات متقاطعة عربية",
+  "short_name": "كلمات",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#08131a",
+  "theme_color": "#0b1720",
+  "lang": "ar",
+  "dir": "rtl",
+  "icons": []
+}
