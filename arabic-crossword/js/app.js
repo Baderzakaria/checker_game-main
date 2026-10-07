@@ -19,6 +19,9 @@ let gameRenderFrame=null;
 let boardResizeCleanup=null;
 let lockedScrollY=null;
 let bodyStyleBeforeLock="";
+// Routes are intentionally in memory. Changing a URL fragment was re-running
+// the global router on every navigation and made ordinary taps feel like reloads.
+let currentRoute="home";
 
 function syncWordViewScrollLock(){
   if(wordViewOpen&&lockedScrollY===null){
@@ -51,13 +54,13 @@ function shell(content){
   return `
   <div class="shell">
     <header class="topbar">
-      <a class="brand" href="#home" aria-label="كلمات">
+      <button type="button" class="brand" data-route="home" aria-label="كلمات">
         <span class="brand-mark">ك</span><span>كلمات</span>
-      </a>
+      </button>
       <nav class="nav">
-        <a class="btn hide-sm" href="#home">الوحدات</a>
-        <a class="btn hide-sm" href="#profile">تقدّمي</a>
-        <a class="btn ${user?"soft":""}" href="${user?"#profile":"#login"}">${user?"حسابي":"دخول"}</a>
+        <button type="button" class="btn hide-sm" data-route="home">الوحدات</button>
+        <button type="button" class="btn hide-sm" data-route="profile">تقدّمي</button>
+        <button type="button" class="btn ${user?"soft":""}" data-route="${user?"profile":"login"}">${user?"حسابي":"دخول"}</button>
       </nav>
     </header>
     ${content}
@@ -83,7 +86,7 @@ function renderHome(){
 
   const unitCards=slots.map(u=>{
     const lock=!u.published;
-    return `<button class="unit ${lock?"locked":""} ${u.done?"done":""}" data-unit="${u.id}" ${lock?"disabled":""}>
+    return `<button type="button" class="unit ${lock?"locked":""} ${u.done?"done":""}" data-unit="${u.id}" ${lock?"disabled":""}>
       <span class="n">${String(u.id).padStart(2,"0")}</span>
       <span class="pill">${u.done?"✓ مكتملة":u.published?"جاهزة":"قيد التحرير"}</span>
       <small>${esc(u.title)}<br>${esc(u.subtitle)}</small>
@@ -97,8 +100,8 @@ function renderHome(){
         <h1>كلمة بعد<br>كلمة.</h1>
         <p>اختر وحدة، ثم ابنِ الإجابة من بنك الحروف.</p>
         <div class="nav" style="margin-top:18px">
-          <button class="btn primary" id="continue-btn">${done?"أكمل من حيث توقفت":"ابدأ الوحدة الأولى"}</button>
-          <a class="btn" href="#profile">تقدّمي</a>
+          <button type="button" class="btn primary" id="continue-btn">${done?"أكمل من حيث توقفت":"ابدأ الوحدة الأولى"}</button>
+          <button type="button" class="btn" data-route="profile">تقدّمي</button>
         </div>
       </div>
       <aside class="hero-card">
@@ -127,11 +130,11 @@ function renderHome(){
   document.querySelectorAll("[data-unit]").forEach(btn=>btn.addEventListener("click",()=>{
     btn.classList.add("launching");
     btn.scrollIntoView({behavior:"smooth",block:"center"});
-    setTimeout(()=>location.hash=`#play/${btn.dataset.unit}`,360);
+    setTimeout(()=>navigate(`play/${btn.dataset.unit}`),360);
   }));
   document.querySelector("#continue-btn")?.addEventListener("click",()=>{
     const next=PUBLISHED_UNITS.find(u=>!state.units?.[u.id]?.completed)||PUBLISHED_UNITS[0];
-    location.hash=`#play/${next.id}`;
+    navigate(`play/${next.id}`);
   });
 }
 
@@ -160,7 +163,7 @@ function renderGame(unitId){
   boardResizeCleanup=null;
   state=loadState();
   const unit=getUnit(unitId);
-  if(!unit){location.hash="#home";return;}
+  if(!unit){navigate("home");return;}
 
   const grid=generateCrossword(unit.entries);
   let session=getSession(unit.id);
@@ -184,7 +187,7 @@ function renderGame(unitId){
     for(let c=0;c<grid.cols;c++){
       const cell=grid.cells[ck(r,c)];
       if(!cell){
-        gridHtml+=`<button class="cell block" tabindex="-1"></button>`;
+        gridHtml+=`<button type="button" class="cell block" tabindex="-1"></button>`;
         continue;
       }
       const value=session.cells[ck(r,c)]||"";
@@ -195,7 +198,7 @@ function renderGame(unitId){
         word.coords.some(x=>x.r===r&&x.c===c)?"active":"",
         word.coords[activeCellIndex]?.r===r&&word.coords[activeCellIndex]?.c===c?"cursor":""
       ].filter(Boolean).join(" ");
-      gridHtml+=`<button class="${cls}" data-cell="${r},${c}" aria-label="خانة ${cell.number?cell.number:""} ${value||"فارغة"}">
+      gridHtml+=`<button type="button" class="${cls}" data-cell="${r},${c}" aria-label="خانة ${cell.number?cell.number:""} ${value||"فارغة"}">
         ${cell.number?`<span class="num">${cell.number}</span>`:""}<span>${esc(value)}</span>
       </button>`;
     }
@@ -203,7 +206,7 @@ function renderGame(unitId){
 
   const solvedN=grid.placed.filter(w=>isWordSolved(w,session)).length;
   const clueRows=dir=>[...grid.placed].filter(w=>w.dir===dir).sort((a,b)=>a.number-b.number).map(w=>`
-    <button class="clue-row ${w.entry.id===word.entry.id?"active":""} ${isWordSolved(w,session)?"solved":""}" data-word="${w.entry.id}">
+    <button type="button" class="clue-row ${w.entry.id===word.entry.id?"active":""} ${isWordSolved(w,session)?"solved":""}" data-word="${w.entry.id}">
       <b>${w.number}</b><span>${esc(w.entry.clue)}</span>
     </button>`).join("");
   const lockedForWord=i=>solvedCells.has(ck(word.coords[i].r,word.coords[i].c));
@@ -234,23 +237,23 @@ function renderGame(unitId){
   const editableAt=i=>!solvedCells.has(ck(word.coords[i].r,word.coords[i].c));
   const wordSlots=word.coords.map((x,i)=>{
     const value=session.cells[ck(x.r,x.c)]||"";
-    return `<button class="answer-slot ${value?"filled":""} ${!editableAt(i)?"locked":""}" data-slot="${i}" aria-label="الخانة ${i+1}${value?` الحرف ${esc(value)}`:" فارغة"}" ${!value||!editableAt(i)?"disabled":""}>${esc(value)}</button>`;
+    return `<button type="button" class="answer-slot ${value?"filled":""} ${!editableAt(i)?"locked":""}" data-slot="${i}" aria-label="الخانة ${i+1}${value?` الحرف ${esc(value)}`:" فارغة"}" ${!value||!editableAt(i)?"disabled":""}>${esc(value)}</button>`;
   }).join("");
   const wordView=wordViewOpen?`
     <section class="word-view ${failed?"is-wrong":""} ${succeeded?"is-success":""}" aria-label="إدخال الإجابة" role="dialog" aria-modal="true">
       <header class="word-view-head">
-        <button class="word-close" id="close-word" aria-label="العودة إلى اللوحة">×</button>
+        <button type="button" class="word-close" id="close-word" aria-label="العودة إلى اللوحة">×</button>
         <div><span class="kicker">${esc(unit.title)}</span><h2>${esc(word.entry.clue)}</h2></div>
         <span class="word-count">${word.chars.length}</span>
       </header>
       <main class="word-view-body">
         <div class="answer-slots" dir="rtl">${wordSlots}</div>
         ${succeeded?'<p class="word-success" role="status">أحسنت</p>':""}
-        <div class="word-actions"><button class="btn soft" id="hint-btn">تلميح</button></div>
+        <div class="word-actions"><button type="button" class="btn soft" id="hint-btn">تلميح</button><button type="button" class="btn" id="clear-word-btn">🧹 مسح</button></div>
       </main>
       <section class="letter-bank word-letter-bank ${failed?"bank-wrong":""}" aria-label="بنك الحروف">
         <span class="bank-label">اختر الحروف</span>
-        <div class="bank-tiles">${bank.tiles.map((tile,i)=>`<button class="letter-tile ${used.has(tile.id)?"used":""}" style="--tile-delay:${i * 24}ms" data-tile="${tile.id}" data-letter="${esc(tile.letter)}" aria-label="الحرف ${esc(tile.letter)}" ${used.has(tile.id)?"disabled":""}>${esc(tile.letter)}</button>`).join("")}</div>
+        <div class="bank-tiles">${bank.tiles.map((tile,i)=>`<button type="button" class="letter-tile ${used.has(tile.id)?"used":""}" style="--tile-delay:${i * 24}ms" data-tile="${tile.id}" data-letter="${esc(tile.letter)}" aria-label="الحرف ${esc(tile.letter)}" ${used.has(tile.id)?"disabled":""}>${esc(tile.letter)}</button>`).join("")}</div>
       </section>
     </section>`:"";
   appEl.innerHTML=shell(`
@@ -262,7 +265,7 @@ function renderGame(unitId){
     </section>
     <section class="game-layout game-screen">
       <div class="board-column">
-        <button class="clue-bar panel clue-bar-button" id="open-current-word" aria-label="افتح كلمة ${esc(word.entry.clue)}">
+        <button type="button" class="clue-bar panel clue-bar-button" id="open-current-word" aria-label="افتح كلمة ${esc(word.entry.clue)}">
           <span class="round-btn" aria-hidden="true">‹</span>
           <span class="current-clue"><span class="pill">${word.number} · ${word.dir==="H"?"أفقي ←":"عمودي ↓"}</span><b>${esc(word.entry.clue)}</b></span>
           <span class="open-word-label">حل الكلمة</span>
@@ -315,6 +318,17 @@ function renderGame(unitId){
     wordViewOpen=open;
     renderGame(unit.id);
   }
+  function clearCurrentWord(){
+    word.coords.forEach((x,i)=>{
+      if(editableAt(i)) delete session.cells[ck(x.r,x.c)];
+    });
+    // Keep the same bank and its tile order; only release its reservations.
+    session.banks[word.entry.id]=resetBankTiles(session.banks[word.entry.id]||bank);
+    activeCellIndex=0;
+    gameFeedback=null;
+    persist();
+    renderGame(unit.id);
+  }
   function checkCompletedWord(){
     if(!word.coords.every(x=>session.cells[ck(x.r,x.c)])) return;
     if(wordValue(word,session)===word.chars.join("")){ solveWord(word,false); return; }
@@ -322,9 +336,8 @@ function renderGame(unitId){
     gameFeedback={unitId:unit.id,wordId:word.entry.id,type:"wrong"};
     persist(); renderGame(unit.id);
     setTimeout(()=>{
-      word.coords.forEach((x,i)=>{if(!solvedCells.has(ck(x.r,x.c))) delete session.cells[ck(x.r,x.c)];});
-      session.banks[word.entry.id]=resetBankTiles(bank);
-      gameFeedback=null; persist(); renderGame(unit.id);
+      if(gameFeedback?.unitId!==unit.id||gameFeedback?.wordId!==word.entry.id||gameFeedback?.type!=="wrong") return;
+      clearCurrentWord();
     },520);
   }
   function writeLetter(raw,tileId){
@@ -395,6 +408,7 @@ function renderGame(unitId){
     toast("كشفنا حرفًا واحدًا");
     activeCellIndex=i; refresh(); checkCompletedWord();
   });
+  document.querySelector("#clear-word-btn")?.addEventListener("click",clearCurrentWord);
   document.querySelectorAll("[data-word]").forEach(el=>el.addEventListener("click",()=>setActive(el.dataset.word,0,true)));
   document.querySelectorAll("[data-cell]").forEach(el=>el.addEventListener("click",()=>{
     const [r,c]=el.dataset.cell.split(",").map(Number);
@@ -441,16 +455,16 @@ function renderResult(unit,grid,session){
       <h3 style="text-align:right">هل تعلم؟</h3>
       ${facts||'<p class="muted">ستظهر هنا بطاقات المعرفة بعد الحل.</p>'}
       <div class="nav" style="justify-content:center;margin-top:18px">
-        <button class="btn primary" id="next-unit-result">الوحدة التالية</button>
-        <a class="btn" href="#profile">تقدّمي</a>
-        <a class="btn" href="#home">كل الوحدات</a>
+        <button type="button" class="btn primary" id="next-unit-result">الوحدة التالية</button>
+        <button type="button" class="btn" data-route="profile">تقدّمي</button>
+        <button type="button" class="btn" data-route="home">كل الوحدات</button>
       </div>
     </section>
   `);
   document.querySelector("#next-unit-result")?.addEventListener("click",()=>{
     const next=PUBLISHED_UNITS.find(u=>u.id>unit.id&&!state.units?.[u.id]?.completed)||PUBLISHED_UNITS.find(u=>u.id>unit.id)||PUBLISHED_UNITS[0];
     activeWordId=null;
-    location.hash=`#play/${next.id}`;
+    navigate(`play/${next.id}`);
   });
 }
 
@@ -470,10 +484,10 @@ function renderProfile(){
       <div class="panel">
         <h3>الحساب</h3>
         <div class="field"><label>الاسم داخل اللعبة</label><input id="display-name" value="${esc(state.profile?.displayName||"ضيف")}" /></div>
-        <button class="btn primary" id="save-name">حفظ</button>
+        <button type="button" class="btn primary" id="save-name">حفظ</button>
         <div class="sep"></div>
         <p class="muted">${accountText}</p>
-        ${user?'<button class="btn danger" id="logout-btn">تسجيل الخروج</button>':'<a class="btn" href="#login">تسجيل الدخول</a>'}
+        ${user?'<button type="button" class="btn danger" id="logout-btn">تسجيل الخروج</button>':'<button type="button" class="btn" data-route="login">تسجيل الدخول</button>'}
         <div class="sep"></div>
         <div class="stats">
           <div class="stat"><b>${completedCount()}</b><span>وحدة مكتملة</span></div>
@@ -501,7 +515,7 @@ function renderProfile(){
 
 function renderLogin(){
   const user=currentUser();
-  if(user){location.hash="#profile";return;}
+  if(user){navigate("profile");return;}
 
   appEl.innerHTML=shell(`
     <section class="login-box panel">
@@ -523,7 +537,7 @@ function renderLogin(){
     try{
       await signIn(document.querySelector("#email").value,document.querySelector("#password").value);
       toast("أهلًا بك");
-      location.hash="#profile";
+      navigate("profile");
     }catch(err){toast(err.message||"تعذر تسجيل الدخول");}
   });
   document.querySelector("#signup-btn").addEventListener("click",async()=>{
@@ -535,23 +549,30 @@ function renderLogin(){
   });
 }
 
+function navigate(nextRoute){
+  currentRoute=nextRoute;
+  activeWordId=null;
+  wordViewOpen=false;
+  route();
+}
+
 function route(){
   if(boardKeyHandler){document.removeEventListener("keydown",boardKeyHandler);boardKeyHandler=null;}
   boardResizeCleanup?.();
   boardResizeCleanup=null;
   wordViewOpen=false;
   syncWordViewScrollLock();
-  const hash=location.hash||"#home";
-  if(hash.startsWith("#play/")){renderGame(Number(hash.split("/")[1]));return;}
-  if(hash==="#profile"){renderProfile();return;}
-  if(hash==="#login"){renderLogin();return;}
+  if(currentRoute.startsWith("play/")){renderGame(Number(currentRoute.split("/")[1]));return;}
+  if(currentRoute==="profile"){renderProfile();return;}
+  if(currentRoute==="login"){renderLogin();return;}
   renderHome();
 }
 
-window.addEventListener("hashchange",()=>{
-  activeWordId=null;
-  wordViewOpen=false;
-  route();
+appEl.addEventListener("click",event=>{
+  const control=event.target.closest("[data-route]");
+  if(!control)return;
+  event.preventDefault();
+  navigate(control.dataset.route);
 });
 window.addEventListener("kalimat-auth-changed",()=>{
   state=loadState();

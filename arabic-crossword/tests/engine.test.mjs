@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {normalizeArabic,generateCrossword,nextCellInWord,entryIndexAtCell,wordsAtCell,createLetterBank,answerChars,createBankState,consumeBankTile,returnBankTile} from "../js/crossword.js";
+import {normalizeArabic,generateCrossword,nextCellInWord,entryIndexAtCell,wordsAtCell,createLetterBank,answerChars,createBankState,consumeBankTile,returnBankTile,resetBankTiles} from "../js/crossword.js";
 import {PUBLISHED_UNITS} from "../js/content.js";
 
 test("Arabic normalization removes tashkeel, tatweel, spaces and alef variants",()=>{
@@ -39,6 +39,17 @@ test("bank tile state consumes and returns the exact same tile multiset",()=>{
   const consumedAgain=consumeBankTile(returned,1,first);
   assert.equal(consumedAgain.consumedBySlot[1],first);
   assert.deepEqual(consumedAgain.tiles.map(tile=>tile.letter).sort(),original);
+});
+
+test("wrong answer clear releases every stable tile for a retry",()=>{
+  const bank=createBankState({id:"retry-state",answer:"سوس",difficulty:2});
+  const used=bank.tiles.slice(0,3).map(tile=>tile.id);
+  const wrong=used.reduce((current,tileId,slot)=>consumeBankTile(current,slot,tileId),bank);
+  const cleared=resetBankTiles(wrong);
+  assert.deepEqual(cleared.tiles,bank.tiles, "clear keeps tile identities and order");
+  assert.deepEqual(cleared.consumedBySlot,{});
+  const retry=used.reduce((current,tileId,slot)=>consumeBankTile(current,slot,tileId),cleared);
+  assert.deepEqual(Object.values(retry.consumedBySlot),used);
 });
 
 test("grid interaction helpers preserve Arabic across coordinate order",()=>{
