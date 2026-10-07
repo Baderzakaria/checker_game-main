@@ -17,23 +17,41 @@ let boardKeyHandler=null;
 let gameFeedback=null;
 let gameRenderFrame=null;
 let boardResizeCleanup=null;
-let lockedScrollY=null;
-let bodyStyleBeforeLock="";
-// Routes are intentionally in memory. Changing a URL fragment was re-running
-// the global router on every navigation and made ordinary taps feel like reloads.
+const routeScrollPositions=new Map();
 let currentRoute="home";
 
-function syncWordViewScrollLock(){
-  if(wordViewOpen&&lockedScrollY===null){
-    lockedScrollY=window.scrollY;
-    bodyStyleBeforeLock=document.body.getAttribute("style")||"";
-    Object.assign(document.body.style,{position:"fixed",top:`-${lockedScrollY}px`,left:"0",right:"0",width:"100%",overflow:"hidden"});
-  }else if(!wordViewOpen&&lockedScrollY!==null){
-    const y=lockedScrollY; lockedScrollY=null;
-    if(bodyStyleBeforeLock) document.body.setAttribute("style",bodyStyleBeforeLock);
-    else document.body.removeAttribute("style");
-    requestAnimationFrame(()=>window.scrollTo(0,y));
+function routeFromLocation(){
+  const url=new URL(location.href);
+  const view=url.searchParams.get("view");
+  if(view==="play") return `play/${Number(url.searchParams.get("unit")||1)}`;
+  if(view==="profile"||view==="login") return view;
+  return "home";
+}
+
+function urlForRoute(routeName){
+  const url=new URL(location.href);
+  url.searchParams.delete("view");
+  url.searchParams.delete("unit");
+  if(routeName.startsWith("play/")){
+    url.searchParams.set("view","play");
+    url.searchParams.set("unit",routeName.split("/")[1]);
+  }else if(routeName!=="home"){
+    url.searchParams.set("view",routeName);
   }
+  return `${url.pathname}${url.search}`;
+}
+
+function syncWordViewScrollLock(){
+  document.documentElement.classList.toggle("word-open",wordViewOpen);
+}
+
+function rememberRouteScroll(){
+  if(!wordViewOpen) routeScrollPositions.set(currentRoute,window.scrollY);
+}
+
+function restoreRouteScroll(routeName,forceTop=false){
+  const target=forceTop?0:(routeScrollPositions.get(routeName)||0);
+  requestAnimationFrame(()=>window.scrollTo({top:target,left:0,behavior:"auto"}));
 }
 
 const esc=(s="")=>String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
@@ -148,6 +166,11 @@ const selectedWord=grid=>grid.placed.find(w=>w.entry.id===activeWordId)||grid.pl
 const activeCoords=word=>new Set(word.coords.map(x=>ck(x.r,x.c)));
 
 function renderGame(unitId){
+  const previousGrid=document.querySelector(".grid-wrap");
+  const previousWordBody=document.querySelector(".word-view-body");
+  const previousGridLeft=previousGrid?.scrollLeft||0;
+  const previousGridTop=previousGrid?.scrollTop||0;
+  const previousWordScroll=previousWordBody?.scrollTop||0;
   boardResizeCleanup?.();
   boardResizeCleanup=null;
   state=loadState();
@@ -281,7 +304,8 @@ function renderGame(unitId){
     cancelAnimationFrame(resizeFrame);
     resizeFrame=requestAnimationFrame(()=>{
       const available=Math.max(0,gridWrap.clientWidth-18);
-      const size=Math.max(9,Math.min(44,Math.floor((available-(grid.cols-1)*2)/grid.cols)));
+      const fit=Math.floor((available-(grid.cols-1)*2)/grid.cols);
+      const size=Math.max(28,Math.min(44,fit));
       crosswordEl.style.setProperty("--cell-size",`${size}px`);
       crosswordEl.style.setProperty("--cell-font",`${Math.max(7,Math.min(17,size*.52))}px`);
       crosswordEl.style.gridTemplateColumns=`repeat(${grid.cols},var(--cell-size))`;
@@ -291,6 +315,14 @@ function renderGame(unitId){
   const gridObserver=new ResizeObserver(resizeGrid);
   gridObserver.observe(gridWrap);
   boardResizeCleanup=()=>{cancelAnimationFrame(resizeFrame);gridObserver.disconnect();};
+  requestAnimationFrame(()=>{
+    gridWrap.scrollLeft=previousGridLeft;
+    gridWrap.scrollTop=previousGridTop;
+    if(wordViewOpen){
+      const body=document.querySelector(".word-view-body");
+      if(body) body.scrollTop=previousWordScroll;
+    }
+  });
 
   function persist(){
     state.units=state.units||{};
@@ -314,7 +346,8 @@ function renderGame(unitId){
       if(editableAt(i)) delete session.cells[ck(x.r,x.c)];
     });
     // Keep the same bank and its tile order; only release its reservations.
-    session.banks[word.entry.id]=resetBankTiles(session.banks[word.entry.id]||bank);
+    bank=resetBankTiles(session.banks[word.entry.id]||bank);
+    session.banks[word.entry.id]=bank;
     activeCellIndex=0;
     gameFeedback=null;
     persist();
@@ -351,7 +384,8 @@ function renderGame(unitId){
     const cell=word.coords[targetIndex];
     if(!cell||solvedCells.has(ck(cell.r,cell.c)))return;
     session.cells[ck(cell.r,cell.c)]=char;
-    session.banks[word.entry.id]=consumeBankTile(bank,targetIndex,tileId);
+    bank=consumeBankTile(session.banks[word.entry.id]||bank,targetIndex,tileId);
+    session.banks[word.entry.id]=bank;
     activeCellIndex=targetIndex;
     persist();
     const next=nextCellInWord(word,activeCellIndex,1);
@@ -404,7 +438,15 @@ function renderGame(unitId){
     const target=word.coords.find((x,i)=>editableAt(i)&&(session.cells[ck(x.r,x.c)]||"")!==word.chars[i]);
     if(!target){toast("كل الحروف موجودة — تحقق من الجواب");return;}
     const i=word.coords.indexOf(target);
+    let currentBank=session.banks[word.entry.id]||bank;
+    const oldTile=currentBank.consumedBySlot?.[i];
+    if(oldTile!==undefined) currentBank=returnBankTile(currentBank,i);
+    const usedIds=new Set(Object.values(currentBank.consumedBySlot||{}).map(Number));
+    const hintTile=currentBank.tiles.find(tile=>tile.letter===word.chars[i]&&!usedIds.has(tile.id));
     session.cells[ck(target.r,target.c)]=word.chars[i];
+    if(hintTile) currentBank=consumeBankTile(currentBank,i,hintTile.id);
+    bank=currentBank;
+    session.banks[word.entry.id]=currentBank;
     session.hints++;
     session.score=Math.max(0,session.score-15);
     toast("كشفنا حرفًا واحدًا");
@@ -432,7 +474,8 @@ function renderGame(unitId){
     const i=Number(el.dataset.slot), cell=word.coords[i];
     if(!editableAt(i)||!session.cells[ck(cell.r,cell.c)]) return;
     delete session.cells[ck(cell.r,cell.c)];
-    session.banks[word.entry.id]=returnBankTile(bank,i);
+    bank=returnBankTile(session.banks[word.entry.id]||bank,i);
+    session.banks[word.entry.id]=bank;
     activeCellIndex=i; persist(); renderGame(unit.id);
   }));
   document.querySelectorAll("[data-tile]").forEach(el=>el.addEventListener("click",()=>writeLetter(el.dataset.letter,Number(el.dataset.tile))));
@@ -565,11 +608,15 @@ function renderLogin(){
   });
 }
 
-function navigate(nextRoute){
+function navigate(nextRoute,{replace=false,forceTop=nextRoute.startsWith("play/")}={}){
+  rememberRouteScroll();
   currentRoute=nextRoute;
   activeWordId=null;
   wordViewOpen=false;
+  syncWordViewScrollLock();
+  history[replace?"replaceState":"pushState"]({route:nextRoute},"",urlForRoute(nextRoute));
   route();
+  restoreRouteScroll(nextRoute,forceTop);
 }
 
 function route(){
@@ -583,6 +630,15 @@ function route(){
   if(currentRoute==="login"){renderLogin();return;}
   renderHome();
 }
+
+window.addEventListener("popstate",()=>{
+  rememberRouteScroll();
+  currentRoute=routeFromLocation();
+  activeWordId=null;
+  wordViewOpen=false;
+  route();
+  restoreRouteScroll(currentRoute,false);
+});
 
 appEl.addEventListener("click",event=>{
   const control=event.target.closest("[data-route]");
@@ -598,5 +654,8 @@ window.addEventListener("kalimat-auth-changed",()=>{
 (async function boot(){
   authInfo=await initCloud();
   state=loadState();
+  currentRoute=routeFromLocation();
+  history.replaceState({route:currentRoute},"",urlForRoute(currentRoute));
   route();
+  restoreRouteScroll(currentRoute,true);
 })();
