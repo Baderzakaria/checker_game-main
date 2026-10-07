@@ -1,5 +1,6 @@
 import {CATEGORIES,PUBLISHED_UNITS,unitSlots,getUnit,UNIT_COUNT} from "./content.js";
 import {generateCrossword,normalizeArabic,entryIndexAtCell,nextCellInWord,wordsAtCell,createBankState,consumeBankTile,returnBankTile,resetBankTiles} from "./crossword.js";
+import {createSession} from "./game-state.js";
 import {
   loadState,saveState,applyXp,updateStreak,updateMastery,
   initCloud,cloudEnabled,currentUser,signIn,signUp,signOut
@@ -146,18 +147,7 @@ function renderHome(){
 }
 
 function getSession(unitId){
-  const existing=state.units?.[unitId]||{};
-  return {
-    cells:existing.cells||{},
-    solved:existing.solved||{},
-    hints:existing.hints||0,
-    mistakes:existing.mistakes||0,
-    score:existing.score||0,
-    banks:existing.banks||{},
-    startedAt:existing.startedAt||new Date().toISOString(),
-    completed:Boolean(existing.completed),
-    stars:existing.stars||0
-  };
+  return createSession(state.units?.[unitId]||{});
 }
 
 const wordValue=(word,session)=>word.coords.map(x=>session.cells[ck(x.r,x.c)]||"").join("");
@@ -329,11 +319,6 @@ function renderGame(unitId){
     state.units[unit.id]={...session};
     saveState(state);
   }
-  function queueRender(){
-    cancelAnimationFrame(gameRenderFrame);
-    gameRenderFrame=requestAnimationFrame(()=>renderGame(unit.id));
-  }
-  function refresh(){persist();queueRender();}
   function setActive(id,index=0,open=true){
     activeWordId=id;
     activeCellIndex=index;
@@ -378,6 +363,12 @@ function renderGame(unitId){
     if(!word.coords.every(x=>session.cells[ck(x.r,x.c)])) return false;
     if(wordValue(word,session)===word.chars.join("")){ solveWord(word,false); return true; }
     session.mistakes++;
+    updateMastery(state,word.entry.category,{
+      correct:false,
+      difficulty:word.entry.difficulty,
+      hints:session.wordHints?.[word.entry.id]||0,
+      timeSeconds:Math.max(1,Math.round((Date.now()-wordStartedAt)/1000))
+    });
     gameFeedback={unitId:unit.id,wordId:word.entry.id,type:"wrong"};
     persist();
     document.querySelector(".word-view")?.classList.add("is-wrong");
@@ -418,11 +409,12 @@ function renderGame(unitId){
     if(!session.solved[target.entry.id]){
       session.solved[target.entry.id]=true;
       const elapsed=Math.max(1,Math.round((Date.now()-wordStartedAt)/1000));
-      const earned=Math.max(35,90+target.entry.difficulty*32-session.hints*5-(force?55:0));
+      const wordHints=session.wordHints?.[target.entry.id]||0;
+      const earned=Math.max(35,90+target.entry.difficulty*32-wordHints*18-(force?55:0));
       session.score+=earned;
       applyXp(state,Math.round(earned*.45));
       updateStreak(state);
-      updateMastery(state,target.entry.category,{correct:true,difficulty:target.entry.difficulty,hints:force?2:0,timeSeconds:elapsed});
+      updateMastery(state,target.entry.category,{correct:true,difficulty:target.entry.difficulty,hints:wordHints,timeSeconds:elapsed});
       toast(`صحيحة! +${earned}`);
     }
     const all=grid.placed.every(w=>session.solved[w.entry.id]);
@@ -437,7 +429,7 @@ function renderGame(unitId){
       state.units[unit.id]={...session};
       saveState(state);
       gameFeedback={unitId:unit.id,wordId:target.entry.id,type:"success"};
-      renderGame(unit.id);
+      document.querySelector(".word-view")?.classList.add("is-success");
       setTimeout(()=>renderResult(unit,grid,session),450);
       return true;
     }
@@ -472,6 +464,7 @@ function renderGame(unitId){
     bank=currentBank;
     session.banks[word.entry.id]=currentBank;
     session.hints++;
+    session.wordHints[word.entry.id]=(session.wordHints[word.entry.id]||0)+1;
     session.score=Math.max(0,session.score-15);
     toast("كشفنا حرفًا واحدًا");
     activeCellIndex=i;
