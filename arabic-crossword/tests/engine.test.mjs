@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {normalizeArabic,generateCrossword,nextCellInWord,entryIndexAtCell,wordsAtCell} from "../js/crossword.js";
+import {normalizeArabic,generateCrossword,nextCellInWord,entryIndexAtCell,wordsAtCell,createLetterBank,answerChars} from "../js/crossword.js";
 import {PUBLISHED_UNITS} from "../js/content.js";
 
 test("Arabic normalization removes tashkeel, tatweel, spaces and alef variants",()=>{
@@ -35,4 +35,21 @@ test("wordsAtCell returns all crossing entries",()=>{
   const horizontal={entry:{id:"h"}}, vertical={entry:{id:"v"}};
   const grid={cells:{"1,2":{refs:[{id:"h"},{id:"v"}]}},placed:[horizontal,vertical]};
   assert.deepEqual(wordsAtCell(grid,1,2),[horizontal,vertical]);
+});
+
+test("letter bank contains the exact answer multiset plus distractors and shuffles it",()=>{
+  // The deterministic stream makes the assertion reproducible while still
+  // exercising the shuffle path.
+  let n=0;
+  const random=()=>[.91,.14,.72,.33,.58,.04,.86,.21][n++%8];
+  const entry={answer:"سوس"};
+  const bank=createLetterBank(entry,{distractorCount:10,random});
+  const answer=answerChars(entry);
+  assert.equal(bank.length,answer.length+10);
+  for(const ch of answer){
+    assert.ok(bank.filter(x=>x===ch).length>=answer.filter(x=>x===ch).length);
+  }
+  assert.notDeepEqual(bank.slice(0,answer.length),answer,
+    "answer letters must not be exposed in answer order");
+  assert.ok(bank.every(ch=>typeof ch==="string"&&Array.from(ch).length===1));
 });

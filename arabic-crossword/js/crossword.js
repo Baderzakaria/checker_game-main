@@ -14,6 +14,25 @@ export function answerChars(entry){
   return Array.from(normalizeArabic(entry.answer));
 }
 
+const BANK_DISTRACTORS=Array.from("ابتثجحخدذرزسشصضطظعغفقكلمنهويءئؤةى");
+
+// A bank is deliberately just a bag of letters: callers never receive a
+// "correct" marker, and Fisher-Yates means answer letters have no stable
+// position to give the answer away.
+export function createLetterBank(entry,{distractorCount=10,random=Math.random}={}){
+  const answer=answerChars(entry);
+  const distractors=[];
+  for(let i=0;i<distractorCount;i++){
+    distractors.push(BANK_DISTRACTORS[Math.floor(random()*BANK_DISTRACTORS.length)]);
+  }
+  const letters=[...answer,...distractors];
+  for(let i=letters.length-1;i>0;i--){
+    const j=Math.floor(random()*(i+1));
+    [letters[i],letters[j]]=[letters[j],letters[i]];
+  }
+  return letters;
+}
+
 // These small pure helpers keep browser input behavior testable.  Horizontal
 // Arabic entries deliberately move toward decreasing columns.
 export function nextCellInWord(word, cellIndex, step=1){
