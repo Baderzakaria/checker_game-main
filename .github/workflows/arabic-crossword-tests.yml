@@ -25,5 +25,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Run engine tests
+      - name: Syntax gate
+        run: npm run check
+      - name: Run engine and state tests
         run: npm test
