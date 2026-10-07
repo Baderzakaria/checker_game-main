@@ -1,0 +1,11 @@
+{
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/arabic-crossword/",
+      "permanent": false
+    }
+  ],
+  "cleanUrls": true,
+  "trailingSlash": true
+}
