@@ -3,6 +3,7 @@ name: Arabic Crossword Tests
 on:
   push:
     branches:
+      - master
       - feat/arabic-crossword-v1
       - refactor/arabic-crossword-ui-architecture
     paths:
