@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feat/arabic-crossword-v1
+      - refactor/arabic-crossword-ui-architecture
     paths:
       - "arabic-crossword/**"
       - ".github/workflows/arabic-crossword-tests.yml"
