@@ -1,0 +1,29 @@
+name: Arabic Crossword Tests
+
+on:
+  push:
+    branches:
+      - feat/arabic-crossword-v1
+    paths:
+      - "arabic-crossword/**"
+      - ".github/workflows/arabic-crossword-tests.yml"
+  pull_request:
+    paths:
+      - "arabic-crossword/**"
+      - ".github/workflows/arabic-crossword-tests.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: arabic-crossword
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run engine tests
+        run: npm test
