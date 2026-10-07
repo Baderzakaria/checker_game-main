@@ -341,24 +341,46 @@ function renderGame(unitId){
     wordViewOpen=open;
     renderGame(unit.id);
   }
+  function syncCurrentWordDom(){
+    const currentBank=session.banks[word.entry.id]||bank;
+    const usedNow=new Set(Object.values(currentBank?.consumedBySlot||{}).map(Number));
+    word.coords.forEach((cell,i)=>{
+      const value=session.cells[ck(cell.r,cell.c)]||"";
+      const slot=document.querySelector(`[data-slot="${i}"]`);
+      if(slot){
+        slot.textContent=value;
+        slot.classList.toggle("filled",Boolean(value));
+        slot.disabled=!value||!editableAt(i);
+      }
+      const boardLetter=document.querySelector(`[data-cell="${cell.r},${cell.c}"] span:last-child`);
+      if(boardLetter) boardLetter.textContent=value;
+    });
+    document.querySelectorAll("[data-tile]").forEach(tile=>{
+      const isUsed=usedNow.has(Number(tile.dataset.tile));
+      tile.disabled=isUsed;
+      tile.classList.toggle("used",isUsed);
+    });
+  }
+
   function clearCurrentWord(){
     word.coords.forEach((x,i)=>{
       if(editableAt(i)) delete session.cells[ck(x.r,x.c)];
     });
-    // Keep the same bank and its tile order; only release its reservations.
     bank=resetBankTiles(session.banks[word.entry.id]||bank);
     session.banks[word.entry.id]=bank;
     activeCellIndex=0;
     gameFeedback=null;
     persist();
-    renderGame(unit.id);
+    syncCurrentWordDom();
+    document.querySelector(".word-view")?.classList.remove("is-wrong");
   }
   function checkCompletedWord(){
     if(!word.coords.every(x=>session.cells[ck(x.r,x.c)])) return false;
     if(wordValue(word,session)===word.chars.join("")){ solveWord(word,false); return true; }
     session.mistakes++;
     gameFeedback={unitId:unit.id,wordId:word.entry.id,type:"wrong"};
-    persist(); renderGame(unit.id);
+    persist();
+    document.querySelector(".word-view")?.classList.add("is-wrong");
     setTimeout(()=>{
       if(gameFeedback?.unitId!==unit.id||gameFeedback?.wordId!==word.entry.id||gameFeedback?.type!=="wrong") return;
       clearCurrentWord();
@@ -421,7 +443,9 @@ function renderGame(unitId){
     }
     gameFeedback={unitId:unit.id,wordId:target.entry.id,type:"success"};
     persist();
-    renderGame(unit.id);
+    document.querySelector(".word-view")?.classList.add("is-success");
+    const success=document.querySelector(".word-success");
+    if(success) success.textContent="أحسنت";
     // A solved answer gets a brief confirmation, then the next unsolved word
     // opens without sending the player back through the board.
     setTimeout(()=>{
@@ -450,7 +474,10 @@ function renderGame(unitId){
     session.hints++;
     session.score=Math.max(0,session.score-15);
     toast("كشفنا حرفًا واحدًا");
-    activeCellIndex=i; refresh(); checkCompletedWord();
+    activeCellIndex=i;
+    persist();
+    syncCurrentWordDom();
+    checkCompletedWord();
   });
   document.querySelector("#clear-word-btn")?.addEventListener("click",clearCurrentWord);
   document.querySelector("#next-word-btn")?.addEventListener("click",()=>{
@@ -476,7 +503,9 @@ function renderGame(unitId){
     delete session.cells[ck(cell.r,cell.c)];
     bank=returnBankTile(session.banks[word.entry.id]||bank,i);
     session.banks[word.entry.id]=bank;
-    activeCellIndex=i; persist(); renderGame(unit.id);
+    activeCellIndex=i;
+    persist();
+    syncCurrentWordDom();
   }));
   document.querySelectorAll("[data-tile]").forEach(el=>el.addEventListener("click",()=>writeLetter(el.dataset.letter,Number(el.dataset.tile))));
   if(boardKeyHandler) document.removeEventListener("keydown",boardKeyHandler);
