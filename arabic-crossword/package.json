@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "audit": "node scripts/audit-content.mjs"
+    "audit": "node scripts/audit-content.mjs",
+    "check": "node --check js/app.js && node --check js/crossword.js && node --check js/game-state.js && node --check js/storage.js && node --check js/content.js"
   }
 }
