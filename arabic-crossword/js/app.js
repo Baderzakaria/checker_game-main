@@ -191,7 +191,7 @@ function renderGame(unitId){
       <b>${w.number}</b><span>${esc(w.entry.clue)}</span>
     </button>`).join("");
   const lockedForWord=i=>solvedCells.has(ck(word.coords[i].r,word.coords[i].c));
-  const bank=createLetterBank(word.entry,{distractorCount:Math.max(8,20-word.chars.length)});
+  const bank=createLetterBank(word.entry);
   // A visible letter in an editable cell reserves one matching tile. Locked
   // crossing letters are inherited from the board and do not consume a tile.
   const used=[];
@@ -218,7 +218,8 @@ function renderGame(unitId){
       </header>
       <main class="word-view-body">
         <div class="answer-slots" dir="rtl">${wordSlots}</div>
-        <div class="word-actions"><button class="btn soft" id="hint-btn">تلميح</button><button class="btn danger" id="reveal-btn">كشف</button></div>
+        ${succeeded?'<p class="word-success" role="status">أحسنت</p>':""}
+        <div class="word-actions"><button class="btn soft" id="hint-btn">تلميح</button></div>
       </main>
       <section class="letter-bank word-letter-bank ${failed?"bank-wrong":""}" aria-label="بنك الحروف">
         <span class="bank-label">اختر الحروف</span>
@@ -241,10 +242,6 @@ function renderGame(unitId){
         </button>
         <div class="grid-wrap">
         <div class="crossword ${failed?"wrong-board":""}" style="grid-template-columns:repeat(${grid.cols},38px)">${gridHtml}</div>
-        </div>
-        <div class="board-tools">
-          <button class="btn soft" id="board-hint-btn">تلميح</button>
-          <button class="btn danger" id="board-reveal-btn">كشف</button>
         </div>
       </div>
       <aside class="panel clue-card">
@@ -345,34 +342,20 @@ function renderGame(unitId){
     gameFeedback={unitId:unit.id,wordId:target.entry.id,type:"success"};
     persist();
     renderGame(unit.id);
-    const solvedIndex=grid.placed.findIndex(w=>w.entry.id===target.entry.id);
-    const next=Array.from({length:grid.placed.length},(_,i)=>grid.placed[(solvedIndex+i+1)%grid.placed.length]).find(w=>!session.solved[w.entry.id]);
-    // Let the successful answer register before returning to the map, then
-    // continue straight into the next unsolved entry for uninterrupted play.
+    // Let the successful answer register, then return to the board. The
+    // player explicitly chooses the next word.
     setTimeout(()=>{
       wordViewOpen=false;
       gameFeedback=null;
       renderGame(unit.id);
-      setTimeout(()=>{
-        activeWordId=next?.entry.id||target.entry.id;
-        activeCellIndex=0;
-        wordStartedAt=Date.now();
-        wordViewOpen=Boolean(next);
-        renderGame(unit.id);
-      },180);
-    },420);
+    },620);
     return true;
   }
 
-  function moveWord(delta){
-    const idx=grid.placed.findIndex(w=>w.entry.id===word.entry.id);
-    const next=grid.placed[(idx+delta+grid.placed.length)%grid.placed.length];
-    setActive(next.entry.id);
-  }
   document.querySelector("#open-current-word")?.addEventListener("click",()=>{wordViewOpen=true;renderGame(unit.id);});
   document.querySelector("#close-word")?.addEventListener("click",()=>{wordViewOpen=false;renderGame(unit.id);});
-  document.querySelectorAll("#hint-btn,#board-hint-btn").forEach(button=>button.addEventListener("click",()=>{
-    const target=word.coords.find((x,i)=>(session.cells[ck(x.r,x.c)]||"")!==word.chars[i]);
+  document.querySelector("#hint-btn")?.addEventListener("click",()=>{
+    const target=word.coords.find((x,i)=>editableAt(i)&&(session.cells[ck(x.r,x.c)]||"")!==word.chars[i]);
     if(!target){toast("كل الحروف موجودة — تحقق من الجواب");return;}
     const i=word.coords.indexOf(target);
     session.cells[ck(target.r,target.c)]=word.chars[i];
@@ -380,14 +363,7 @@ function renderGame(unitId){
     session.score=Math.max(0,session.score-15);
     toast("كشفنا حرفًا واحدًا");
     activeCellIndex=i; refresh(); checkCompletedWord();
-  }));
-  document.querySelectorAll("#reveal-btn,#board-reveal-btn").forEach(button=>button.addEventListener("click",()=>{
-    word.coords.forEach((x,i)=>session.cells[ck(x.r,x.c)]=word.chars[i]);
-    session.hints+=2;
-    session.score=Math.max(0,session.score-50);
-    persist();
-    solveWord(word,true);
-  }));
+  });
   document.querySelectorAll("[data-word]").forEach(el=>el.addEventListener("click",()=>setActive(el.dataset.word,0,true)));
   document.querySelectorAll("[data-cell]").forEach(el=>el.addEventListener("click",()=>{
     const [r,c]=el.dataset.cell.split(",").map(Number);
@@ -409,11 +385,7 @@ function renderGame(unitId){
   boardKeyHandler=function onKey(e){
     if(e.ctrlKey||e.metaKey||e.altKey)return;
     if(!wordViewOpen)return;
-    if(e.key==="Escape"){wordViewOpen=false;renderGame(unit.id);return;}
-    if(e.key==="ArrowLeft"){e.preventDefault();activeCellIndex=nextCellInWord(word,activeCellIndex,1);renderGame(unit.id);return;}
-    if(e.key==="ArrowRight"){e.preventDefault();activeCellIndex=nextCellInWord(word,activeCellIndex,-1);renderGame(unit.id);return;}
-    if(e.key==="Backspace"){e.preventDefault();const cell=word.coords[activeCellIndex];if(!solvedCells.has(ck(cell.r,cell.c))) delete session.cells[ck(cell.r,cell.c)];persist();renderGame(unit.id);return;}
-    if(Array.from(normalizeArabic(e.key)).length===1){e.preventDefault();writeLetter(e.key);}
+    if(e.key==="Escape"){e.preventDefault();wordViewOpen=false;renderGame(unit.id);}
   };
   document.addEventListener("keydown",boardKeyHandler);
 }

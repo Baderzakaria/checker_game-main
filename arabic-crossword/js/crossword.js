@@ -19,8 +19,14 @@ const BANK_DISTRACTORS=Array.from("ابتثجحخدذرزسشصضطظعغفقك�
 // A bank is deliberately just a bag of letters: callers never receive a
 // "correct" marker, and Fisher-Yates means answer letters have no stable
 // position to give the answer away.
-export function createLetterBank(entry,{distractorCount=10,random=Math.random}={}){
+export function createLetterBank(entry,{distractorCount,random=Math.random}={}){
   const answer=answerChars(entry);
+  // Short answers get a few decoys; longer ones give up decoys to remain
+  // focused at twelve tiles whenever their answer length allows it.
+  if(distractorCount===undefined){
+    distractorCount=Math.min(6,Math.max(3,12-answer.length));
+    distractorCount=Math.min(distractorCount,Math.max(0,12-answer.length));
+  }
   const distractors=[];
   for(let i=0;i<distractorCount;i++){
     distractors.push(BANK_DISTRACTORS[Math.floor(random()*BANK_DISTRACTORS.length)]);

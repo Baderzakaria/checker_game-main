@@ -43,13 +43,23 @@ test("letter bank contains the exact answer multiset plus distractors and shuffl
   let n=0;
   const random=()=>[.91,.14,.72,.33,.58,.04,.86,.21][n++%8];
   const entry={answer:"سوس"};
-  const bank=createLetterBank(entry,{distractorCount:10,random});
+  const bank=createLetterBank(entry,{random});
   const answer=answerChars(entry);
-  assert.equal(bank.length,answer.length+10);
+  assert.equal(bank.length,answer.length+6);
+  assert.ok(bank.length<=12);
   for(const ch of answer){
     assert.ok(bank.filter(x=>x===ch).length>=answer.filter(x=>x===ch).length);
   }
   assert.notDeepEqual(bank.slice(0,answer.length),answer,
     "answer letters must not be exposed in answer order");
   assert.ok(bank.every(ch=>typeof ch==="string"&&Array.from(ch).length===1));
+});
+
+test("letter bank reduces distractors for long answers while preserving every answer letter",()=>{
+  const entry={answer:"الاستقلال"};
+  const answer=answerChars(entry);
+  const bank=createLetterBank(entry,{random:()=>.4});
+  assert.equal(bank.length,12);
+  assert.equal(bank.length-answer.length,3);
+  for(const ch of answer) assert.ok(bank.filter(x=>x===ch).length>=answer.filter(x=>x===ch).length);
 });
