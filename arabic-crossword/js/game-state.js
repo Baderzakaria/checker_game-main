@@ -32,19 +32,28 @@ export function isEditableCell(cell,solvedCells){
 }
 
 export function ensureWordBank(session,word,{contextLetters=[],solvedCells=new Set()}={}){
-  let bank=session.banks[word.entry.id];
-  if(bank) return bank;
+  let bank=session.banks[word.entry.id]||createBankState(word.entry,{contextLetters});
 
-  bank=createBankState(word.entry,{contextLetters});
-  const used=new Set();
+  // Reconcile persisted reservations with the current crossing state. A cell
+  // that became locked because another word was solved no longer consumes a
+  // bank tile. Existing editable letters, including migrated sessions, reserve
+  // one stable matching tile exactly once.
+  word.coords.forEach((cell,index)=>{
+    if(!isEditableCell(cell,solvedCells)&&bank.consumedBySlot?.[index]!==undefined){
+      bank=returnBankTile(bank,index);
+    }
+  });
+
+  let used=consumedTileIds(bank);
   word.coords.forEach((cell,index)=>{
     const value=session.cells[cellKey(cell)];
-    if(!value||!isEditableCell(cell,solvedCells)) return;
+    if(!value||!isEditableCell(cell,solvedCells)||bank.consumedBySlot?.[index]!==undefined) return;
     const tile=bank.tiles.find(item=>item.letter===value&&!used.has(item.id));
     if(!tile) return;
     bank=consumeBankTile(bank,index,tile.id);
-    used.add(tile.id);
+    used=consumedTileIds(bank);
   });
+
   session.banks[word.entry.id]=bank;
   return bank;
 }
