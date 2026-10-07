@@ -1,5 +1,5 @@
 import {CATEGORIES,PUBLISHED_UNITS,unitSlots,getUnit,UNIT_COUNT} from "./content.js";
-import {generateCrossword,normalizeArabic} from "./crossword.js";
+import {generateCrossword,normalizeArabic,entryIndexAtCell,nextCellInWord,wordsAtCell} from "./crossword.js";
 import {
   loadState,saveState,applyXp,updateStreak,updateMastery,
   initCloud,cloudEnabled,currentUser,signIn,signUp,signOut
@@ -10,7 +10,9 @@ const toastEl=document.querySelector("#toast");
 let state=loadState();
 let authInfo={enabled:false,user:null};
 let activeWordId=null;
+let activeCellIndex=0;
 let wordStartedAt=Date.now();
+let boardKeyHandler=null;
 
 const esc=(s="")=>String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
 const ck=(r,c)=>`${r},${c}`;
@@ -144,6 +146,7 @@ function renderGame(unitId){
   }
 
   const word=selectedWord(grid);
+  activeCellIndex=Math.max(0,Math.min(word.coords.length-1,activeCellIndex));
   const active=activeCoords(word);
   const solvedCells=new Set();
   for(const w of grid.placed){
@@ -163,7 +166,8 @@ function renderGame(unitId){
         "cell",
         active.has(ck(r,c))?"in-word":"",
         solvedCells.has(ck(r,c))?"correct":"",
-        word.coords.some(x=>x.r===r&&x.c===c)?"active":""
+        word.coords.some(x=>x.r===r&&x.c===c)?"active":"",
+        word.coords[activeCellIndex]?.r===r&&word.coords[activeCellIndex]?.c===c?"cursor":""
       ].filter(Boolean).join(" ");
       gridHtml+=`<button class="${cls}" data-cell="${r},${c}" aria-label="خانة">
         ${cell.number?`<span class="num">${cell.number}</span>`:""}<span>${esc(value)}</span>
@@ -172,10 +176,11 @@ function renderGame(unitId){
   }
 
   const solvedN=grid.placed.filter(w=>isWordSolved(w,session)).length;
-  const clueList=[...grid.placed].sort((a,b)=>a.number-b.number).map(w=>`
+  const clueRows=dir=>[...grid.placed].filter(w=>w.dir===dir).sort((a,b)=>a.number-b.number).map(w=>`
     <button class="clue-row ${w.entry.id===word.entry.id?"active":""} ${isWordSolved(w,session)?"solved":""}" data-word="${w.entry.id}">
-      <b>${w.number}${w.dir==="H"?"↔":"↕"}</b><span>${esc(w.entry.clue)}</span>
+      <b>${w.number}</b><span>${esc(w.entry.clue)}</span>
     </button>`).join("");
+  const keys=["ض","ص","ث","ق","ف","غ","ع","ه","خ","ح","ج","د","ش","س","ي","ب","ل","ا","ت","ن","م","ك","ط","ئ","ء","ؤ","ر","ى","ة","و","ز","ظ"];
 
   const media=word.entry.media?renderMedia(word.entry.media):"";
   appEl.innerHTML=shell(`
@@ -189,23 +194,28 @@ function renderGame(unitId){
     </section>
     ${grid.unplaced.length?`<div class="notice" style="margin-top:12px">المحرّك وضع ${grid.placed.length} من أصل ${unit.entries.length} كلمة في هذه الشبكة التجريبية. الكلمات غير الموضوعة تبقى في بنك الوحدة لإعادة التوليد لاحقًا.</div>`:""}
     <section class="game-layout">
-      <div class="grid-wrap">
+      <div class="board-column">
+        <div class="clue-bar panel">
+          <button class="round-btn" id="prev-btn" aria-label="الكلمة السابقة">‹</button>
+          <div class="current-clue"><span class="pill">${word.number} · ${word.dir==="H"?"أفقي ←":"عمودي ↓"}</span><b>${esc(word.entry.clue)}</b></div>
+          <button class="round-btn" id="next-btn" aria-label="الكلمة التالية">›</button>
+        </div>
+        <div class="grid-wrap">
         <div class="crossword" style="grid-template-columns:repeat(${grid.cols},38px)">${gridHtml}</div>
+        </div>
+        <div class="board-tools">
+          <button class="btn soft" id="hint-btn">💡 تلميح</button>
+          <button class="btn" id="reveal-letter-btn">كشف حرف</button>
+          <button class="btn danger" id="reveal-btn">كشف كلمة</button>
+        </div>
+        <div class="arabic-keyboard" aria-label="لوحة مفاتيح عربية">${keys.map(letter=>`<button data-key="${letter}">${letter}</button>`).join("")}<button class="key-back" data-key="backspace" aria-label="حذف">⌫</button></div>
       </div>
       <aside class="panel clue-card">
         <span class="pill">${CATEGORIES[word.entry.category]?.icon||"•"} ${esc(CATEGORIES[word.entry.category]?.label||word.entry.category)}</span>
-        <h3>${word.number} ${word.dir==="H"?"أفقي":"عمودي"}</h3>
+        <h3>دليل الكلمات</h3>
         ${media}
-        <div class="clue">${esc(word.entry.clue)}</div>
-        <input id="answer-input" class="answer-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="اكتب الجواب..." value="${esc(wordValue(word,session))}" />
-        <div class="actions">
-          <button class="btn primary" id="check-btn">تحقق</button>
-          <button class="btn" id="next-btn">التالي</button>
-          <button class="btn soft" id="hint-btn">كشف حرف</button>
-          <button class="btn danger" id="reveal-btn">كشف الكلمة</button>
-        </div>
         <div class="sep"></div>
-        <div class="clue-list">${clueList}</div>
+        <div class="clue-groups"><section><h4>أفقي</h4>${clueRows("H")}</section><section><h4>عمودي</h4>${clueRows("V")}</section></div>
       </aside>
     </section>
   `);
@@ -222,39 +232,36 @@ function renderGame(unitId){
     saveState(state);
   }
   function refresh(){persist();renderGame(unit.id);}
-  function setActive(id){
+  function setActive(id,index=0){
     activeWordId=id;
+    activeCellIndex=index;
     wordStartedAt=Date.now();
     renderGame(unit.id);
-    setTimeout(()=>document.querySelector("#answer-input")?.focus(),0);
   }
-  function writeValue(raw){
-    const chars=Array.from(normalizeArabic(raw)).slice(0,word.chars.length);
-    word.coords.forEach((x,i)=>{
-      const key=ck(x.r,x.c);
-      if(chars[i]) session.cells[key]=chars[i];
-      else if(!solvedCells.has(key)) delete session.cells[key];
-    });
+  function writeLetter(raw){
+    const char=Array.from(normalizeArabic(raw))[0];
+    if(!char)return;
+    const cell=word.coords[activeCellIndex];
+    if(!cell||solvedCells.has(ck(cell.r,cell.c)))return;
+    session.cells[ck(cell.r,cell.c)]=char;
     persist();
-  }
-  function completeWord(force=false){
-    const actual=wordValue(word,session);
-    const expected=word.chars.join("");
-    if(actual!==expected&&!force){
-      session.mistakes++;
-      updateMastery(state,word.entry.category,{correct:false,difficulty:word.entry.difficulty,hints:0,timeSeconds:Math.max(1,(Date.now()-wordStartedAt)/1000)});
-      persist();
-      toast("ليست هي بعد — جرّب من التقاطعات");
-      return false;
+    const affected=wordsAtCell(grid,cell.r,cell.c);
+    for(const candidate of affected){
+      if(!session.solved[candidate.entry.id]&&wordValue(candidate,session)===candidate.chars.join("")) solveWord(candidate,false);
     }
-    if(!session.solved[word.entry.id]){
-      session.solved[word.entry.id]=true;
+    const next=nextCellInWord(word,activeCellIndex,1);
+    activeCellIndex=next===activeCellIndex?activeCellIndex:next;
+    renderGame(unit.id);
+  }
+  function solveWord(target,force=false){
+    if(!session.solved[target.entry.id]){
+      session.solved[target.entry.id]=true;
       const elapsed=Math.max(1,Math.round((Date.now()-wordStartedAt)/1000));
-      const earned=Math.max(35,90+word.entry.difficulty*32-session.hints*5-(force?55:0));
+      const earned=Math.max(35,90+target.entry.difficulty*32-session.hints*5-(force?55:0));
       session.score+=earned;
       applyXp(state,Math.round(earned*.45));
       updateStreak(state);
-      updateMastery(state,word.entry.category,{correct:true,difficulty:word.entry.difficulty,hints:force?2:0,timeSeconds:elapsed});
+      updateMastery(state,target.entry.category,{correct:true,difficulty:target.entry.difficulty,hints:force?2:0,timeSeconds:elapsed});
       toast(`صحيحة! +${earned}`);
     }
     const all=grid.placed.every(w=>session.solved[w.entry.id]);
@@ -272,27 +279,20 @@ function renderGame(unitId){
       return true;
     }
     const next=grid.placed.find(w=>!session.solved[w.entry.id]);
-    activeWordId=next?.entry.id||word.entry.id;
+    activeWordId=next?.entry.id||target.entry.id;
+    activeCellIndex=0;
     wordStartedAt=Date.now();
     setTimeout(()=>renderGame(unit.id),220);
     return true;
   }
 
-  document.querySelector("#answer-input")?.addEventListener("input",e=>{
-    writeValue(e.target.value);
-    word.coords.forEach(x=>{
-      const el=document.querySelector(`[data-cell="${x.r},${x.c}"] span:last-child`);
-      if(el) el.textContent=session.cells[ck(x.r,x.c)]||"";
-    });
-  });
-  document.querySelector("#answer-input")?.addEventListener("keydown",e=>{if(e.key==="Enter")completeWord(false);});
-  document.querySelector("#check-btn")?.addEventListener("click",()=>completeWord(false));
-  document.querySelector("#next-btn")?.addEventListener("click",()=>{
+  function moveWord(delta){
     const idx=grid.placed.findIndex(w=>w.entry.id===word.entry.id);
-    const ordered=[...grid.placed.slice(idx+1),...grid.placed.slice(0,idx+1)];
-    const next=ordered.find(w=>!session.solved[w.entry.id])||grid.placed[(idx+1)%grid.placed.length];
+    const next=grid.placed[(idx+delta+grid.placed.length)%grid.placed.length];
     setActive(next.entry.id);
-  });
+  }
+  document.querySelector("#next-btn")?.addEventListener("click",()=>moveWord(1));
+  document.querySelector("#prev-btn")?.addEventListener("click",()=>moveWord(-1));
   document.querySelector("#hint-btn")?.addEventListener("click",()=>{
     const target=word.coords.find((x,i)=>(session.cells[ck(x.r,x.c)]||"")!==word.chars[i]);
     if(!target){toast("كل الحروف موجودة — تحقق من الجواب");return;}
@@ -301,24 +301,42 @@ function renderGame(unitId){
     session.hints++;
     session.score=Math.max(0,session.score-15);
     toast("كشفنا حرفًا واحدًا");
-    refresh();
+    activeCellIndex=i; refresh();
   });
+  document.querySelector("#reveal-letter-btn")?.addEventListener("click",()=>document.querySelector("#hint-btn")?.click());
   document.querySelector("#reveal-btn")?.addEventListener("click",()=>{
     word.coords.forEach((x,i)=>session.cells[ck(x.r,x.c)]=word.chars[i]);
     session.hints+=2;
     session.score=Math.max(0,session.score-50);
     persist();
-    completeWord(true);
+    solveWord(word,true);
   });
   document.querySelectorAll("[data-word]").forEach(el=>el.addEventListener("click",()=>setActive(el.dataset.word)));
   document.querySelectorAll("[data-cell]").forEach(el=>el.addEventListener("click",()=>{
     const [r,c]=el.dataset.cell.split(",").map(Number);
-    const refs=grid.cells[ck(r,c)]?.refs||[];
-    if(!refs.length)return;
-    const currentIndex=refs.findIndex(x=>x.id===activeWordId);
-    setActive(refs[(currentIndex+1)%refs.length].id);
+    const words=wordsAtCell(grid,r,c);
+    if(!words.length)return;
+    const selected=words.find(w=>w.entry.id===activeWordId);
+    const next=selected&&words.length>1?words[(words.indexOf(selected)+1)%words.length]:words[0];
+    setActive(next.entry.id,entryIndexAtCell(next,r,c));
   }));
-  setTimeout(()=>document.querySelector("#answer-input")?.focus(),0);
+  document.querySelectorAll("[data-key]").forEach(el=>el.addEventListener("click",()=>{
+    if(el.dataset.key==="backspace"){
+      const i=activeCellIndex, cell=word.coords[i];
+      if(!solvedCells.has(ck(cell.r,cell.c))) delete session.cells[ck(cell.r,cell.c)];
+      activeCellIndex=nextCellInWord(word,i,-1); persist();renderGame(unit.id);return;
+    }
+    writeLetter(el.dataset.key);
+  }));
+  if(boardKeyHandler) document.removeEventListener("keydown",boardKeyHandler);
+  boardKeyHandler=function onKey(e){
+    if(e.ctrlKey||e.metaKey||e.altKey)return;
+    if(e.key==="ArrowLeft"){e.preventDefault();activeCellIndex=nextCellInWord(word,activeCellIndex,1);renderGame(unit.id);return;}
+    if(e.key==="ArrowRight"){e.preventDefault();activeCellIndex=nextCellInWord(word,activeCellIndex,-1);renderGame(unit.id);return;}
+    if(e.key==="Backspace"){e.preventDefault();document.querySelector('[data-key="backspace"]')?.click();return;}
+    if(Array.from(normalizeArabic(e.key)).length===1){e.preventDefault();writeLetter(e.key);}
+  };
+  document.addEventListener("keydown",boardKeyHandler);
 }
 
 function renderMedia(media){
@@ -331,7 +349,7 @@ function renderResult(unit,grid,session){
   state=loadState();
   const facts=grid.placed.filter(w=>w.entry.fact).slice(0,5).map(w=>`<div class="fact"><b>${esc(w.entry.answer)}</b><br>${esc(w.entry.fact)}</div>`).join("");
   appEl.innerHTML=shell(`
-    <section class="result panel">
+    <section class="result panel celebration">
       <div class="big">${"★".repeat(session.stars||1)}${"☆".repeat(3-(session.stars||1))}</div>
       <span class="kicker">اكتملت الوحدة ${unit.id}</span>
       <h1 style="font-size:2.5rem;margin:10px 0">${esc(unit.title)}</h1>
@@ -435,6 +453,7 @@ function renderLogin(){
 }
 
 function route(){
+  if(boardKeyHandler){document.removeEventListener("keydown",boardKeyHandler);boardKeyHandler=null;}
   const hash=location.hash||"#home";
   if(hash.startsWith("#play/")){renderGame(Number(hash.split("/")[1]));return;}
   if(hash==="#profile"){renderProfile();return;}

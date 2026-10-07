@@ -14,6 +14,23 @@ export function answerChars(entry){
   return Array.from(normalizeArabic(entry.answer));
 }
 
+// These small pure helpers keep browser input behavior testable.  Horizontal
+// Arabic entries deliberately move toward decreasing columns.
+export function nextCellInWord(word, cellIndex, step=1){
+  const length=word.coords.length;
+  return Math.max(0,Math.min(length-1,cellIndex+step));
+}
+
+export function entryIndexAtCell(word,row,col){
+  return word.coords.findIndex(x=>x.r===row&&x.c===col);
+}
+
+export function wordsAtCell(grid,row,col){
+  return (grid.cells[key(row,col)]?.refs||[])
+    .map(ref=>grid.placed.find(word=>word.entry.id===ref.id))
+    .filter(Boolean);
+}
+
 function key(r,c){ return `${r},${c}`; }
 function get(grid,r,c){ return grid.get(key(r,c)); }
 function set(grid,r,c,ch){ grid.set(key(r,c),ch); }
@@ -92,7 +109,10 @@ function possiblePlacements(grid,entry,size){
         const newArea=boundsOf(simulated).area;
         const center=size/2;
         const distance=Math.abs(startR-center)+Math.abs(startC-center);
-        const score=valid.intersections*100-(newArea-oldArea)*0.25-distance*0.03;
+        // Crosses are worth far more than merely fitting.  The expansion and
+        // centre penalties produce compact, recognisably crossword-like grids.
+        const score=valid.intersections*180-(newArea-oldArea)*1.35-distance*.12
+          +Math.min(chars.length,7)*.5;
         out.push({row:startR,col:startC,dir,chars,intersections:valid.intersections,score});
       }
     }
@@ -190,7 +210,9 @@ export function generateCrossword(entries,{size=27}={}){
   for(const root of roots){
     const candidate=buildWithRoot(usable,root,size);
     if(!candidate) continue;
-    const score=candidate.placed.length*1000+candidate.totalIntersections*25+candidate.density*10;
+    const compactness=1-(candidate.bounds.area/(size*size));
+    const score=candidate.placed.length*1000+candidate.totalIntersections*80
+      +candidate.density*180+compactness*25;
     if(!best || score>best.score) best={...candidate,score};
   }
   if(!best) throw new Error("Could not generate crossword");
