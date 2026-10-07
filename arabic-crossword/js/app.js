@@ -1,0 +1,683 @@
+import {CATEGORIES,PUBLISHED_UNITS,unitSlots,getUnit,UNIT_COUNT} from "./content.js";
+import {generateCrossword,normalizeArabic,entryIndexAtCell,nextCellInWord,wordsAtCell,createBankState,consumeBankTile,returnBankTile,resetBankTiles} from "./crossword.js";
+import {createSession} from "./game-state.js";
+import {
+  loadState,saveState,applyXp,updateStreak,updateMastery,
+  initCloud,cloudEnabled,currentUser,signIn,signUp,signOut
+} from "./storage.js";
+
+const appEl=document.querySelector("#app");
+const toastEl=document.querySelector("#toast");
+let state=loadState();
+let authInfo={enabled:false,user:null};
+let activeWordId=null;
+let activeCellIndex=0;
+let wordViewOpen=false;
+let wordStartedAt=Date.now();
+let boardKeyHandler=null;
+let gameFeedback=null;
+let gameRenderFrame=null;
+let boardResizeCleanup=null;
+const routeScrollPositions=new Map();
+let currentRoute="home";
+
+function routeFromLocation(){
+  const url=new URL(location.href);
+  const view=url.searchParams.get("view");
+  if(view==="play") return `play/${Number(url.searchParams.get("unit")||1)}`;
+  if(view==="profile"||view==="login") return view;
+  return "home";
+}
+
+function urlForRoute(routeName){
+  const url=new URL(location.href);
+  url.searchParams.delete("view");
+  url.searchParams.delete("unit");
+  if(routeName.startsWith("play/")){
+    url.searchParams.set("view","play");
+    url.searchParams.set("unit",routeName.split("/")[1]);
+  }else if(routeName!=="home"){
+    url.searchParams.set("view",routeName);
+  }
+  return `${url.pathname}${url.search}`;
+}
+
+function syncWordViewScrollLock(){
+  document.documentElement.classList.toggle("word-open",wordViewOpen);
+}
+
+function rememberRouteScroll(){
+  if(!wordViewOpen) routeScrollPositions.set(currentRoute,window.scrollY);
+}
+
+function restoreRouteScroll(routeName,forceTop=false){
+  const target=forceTop?0:(routeScrollPositions.get(routeName)||0);
+  requestAnimationFrame(()=>window.scrollTo({top:target,left:0,behavior:"auto"}));
+}
+
+const esc=(s="")=>String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
+const ck=(r,c)=>`${r},${c}`;
+const pct=(v,min=650,max=1450)=>Math.max(0,Math.min(100,Math.round((v-min)/(max-min)*100)));
+const completedCount=()=>Object.values(state.units||{}).filter(x=>x.completed).length;
+const publishedCompleted=()=>PUBLISHED_UNITS.filter(u=>state.units?.[u.id]?.completed).length;
+
+function toast(msg){
+  toastEl.textContent=msg;
+  toastEl.classList.add("show");
+  clearTimeout(toastEl._t);
+  toastEl._t=setTimeout(()=>toastEl.classList.remove("show"),1800);
+}
+
+function shell(content){
+  const user=currentUser();
+  return `
+  <div class="shell">
+    <header class="topbar">
+      <button type="button" class="brand" data-route="home" aria-label="كلمات">
+        <span class="brand-mark">ك</span><span>كلمات</span>
+      </button>
+      <nav class="nav">
+        <button type="button" class="btn hide-sm" data-route="home">الوحدات</button>
+        <button type="button" class="btn hide-sm" data-route="profile">تقدّمي</button>
+        <button type="button" class="btn ${user?"soft":""}" data-route="${user?"profile":"login"}">${user?"حسابي":"دخول"}</button>
+      </nav>
+    </header>
+    ${content}
+    <footer class="footer">كلمات</footer>
+  </div>`;
+}
+
+function renderHome(){
+  state=loadState();
+  const done=publishedCompleted();
+  const xp=state.xp||0, level=state.level||1;
+  const slots=unitSlots(state);
+
+  const unitCards=slots.map(u=>{
+    const lock=!u.published;
+    const lead=u.published?getUnit(u.id)?.entries?.[0]:null;
+    const category=lead&&CATEGORIES[lead.category];
+    return `<button type="button" class="unit ${lock?"locked":""} ${u.done?"done":""}" data-unit="${u.id}" ${lock?"disabled":""}>
+      <span class="n">${String(u.id).padStart(2,"0")}</span>
+      <span class="pill">${u.done?"✓ مكتملة":u.published?"جاهزة":"قيد التحرير"}</span>
+      <small>${esc(u.title)}<br>${esc(u.subtitle)}${category?`<br><em class="unit-category">${category.icon} ${esc(category.label)}</em>`:""}</small>
+    </button>`;
+  }).join("");
+
+  appEl.innerHTML=shell(`
+    <section class="hero">
+      <div>
+        <span class="eyebrow">لعبة كلمات عربية</span>
+        <h1>كلمة بعد<br>كلمة.</h1>
+        <p>اختر وحدة، ثم ابنِ الإجابة من بنك الحروف.</p>
+        <div class="nav" style="margin-top:18px">
+          <button type="button" class="btn primary" id="continue-btn">${done?"أكمل من حيث توقفت":"ابدأ الوحدة الأولى"}</button>
+          <button type="button" class="btn" data-route="profile">تقدّمي</button>
+        </div>
+      </div>
+      <aside class="hero-card">
+        <span class="kicker">ملف اللاعب</span>
+        <h2 style="margin:8px 0 2px">${esc(state.profile?.displayName||"ضيف")}</h2>
+        <p class="muted" style="margin:0 0 16px">المستوى ${level}</p>
+        <div class="stats">
+          <div class="stat"><b>${xp}</b><span>XP</span></div>
+          <div class="stat"><b>${done}/${PUBLISHED_UNITS.length}</b><span>وحدات منشورة</span></div>
+          <div class="stat"><b>${UNIT_COUNT}</b><span>مسار المرحلة</span></div>
+        </div>
+        <div style="margin-top:16px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:7px"><span>تقدم المرحلة الحالية</span><span>${Math.round(done/Math.max(1,PUBLISHED_UNITS.length)*100)}%</span></div>
+          <div class="progress"><i style="width:${done/Math.max(1,PUBLISHED_UNITS.length)*100}%"></i></div>
+        </div>
+      </aside>
+    </section>
+
+    <div class="section-head" id="units"><div><h2>اختر وحدة</h2><p>ابدأ مباشرة من أي وحدة منشورة.</p></div></div>
+    <section class="units">${unitCards}</section>
+  `);
+
+  document.querySelectorAll("[data-unit]").forEach(btn=>btn.addEventListener("click",()=>{
+    btn.classList.add("launching");
+    btn.scrollIntoView({behavior:"smooth",block:"center"});
+    setTimeout(()=>navigate(`play/${btn.dataset.unit}`),360);
+  }));
+  document.querySelector("#continue-btn")?.addEventListener("click",()=>{
+    const next=PUBLISHED_UNITS.find(u=>!state.units?.[u.id]?.completed)||PUBLISHED_UNITS[0];
+    navigate(`play/${next.id}`);
+  });
+}
+
+function getSession(unitId){
+  return createSession(state.units?.[unitId]||{});
+}
+
+const wordValue=(word,session)=>word.coords.map(x=>session.cells[ck(x.r,x.c)]||"").join("");
+const isWordSolved=(word,session)=>Boolean(session.solved[word.entry.id]);
+const selectedWord=grid=>grid.placed.find(w=>w.entry.id===activeWordId)||grid.placed[0];
+const activeCoords=word=>new Set(word.coords.map(x=>ck(x.r,x.c)));
+
+function renderGame(unitId){
+  const previousGrid=document.querySelector(".grid-wrap");
+  const previousWordBody=document.querySelector(".word-view-body");
+  const previousGridLeft=previousGrid?.scrollLeft||0;
+  const previousGridTop=previousGrid?.scrollTop||0;
+  const previousWordScroll=previousWordBody?.scrollTop||0;
+  boardResizeCleanup?.();
+  boardResizeCleanup=null;
+  state=loadState();
+  const unit=getUnit(unitId);
+  if(!unit){navigate("home");return;}
+
+  const grid=generateCrossword(unit.entries);
+  let session=getSession(unit.id);
+  if(session.completed){renderResult(unit,grid,session);return;}
+
+  if(!activeWordId||!grid.placed.some(w=>w.entry.id===activeWordId)){
+    activeWordId=(grid.placed.find(w=>!session.solved[w.entry.id])||grid.placed[0]).entry.id;
+    wordStartedAt=Date.now();
+  }
+
+  const word=selectedWord(grid);
+  activeCellIndex=Math.max(0,Math.min(word.coords.length-1,activeCellIndex));
+  const active=activeCoords(word);
+  const solvedCells=new Set();
+  for(const w of grid.placed){
+    if(isWordSolved(w,session)) for(const x of w.coords) solvedCells.add(ck(x.r,x.c));
+  }
+
+  let gridHtml="";
+  for(let r=0;r<grid.rows;r++){
+    for(let c=0;c<grid.cols;c++){
+      const cell=grid.cells[ck(r,c)];
+      if(!cell){
+        gridHtml+=`<button type="button" class="cell block" tabindex="-1"></button>`;
+        continue;
+      }
+      const value=session.cells[ck(r,c)]||"";
+      const masked=Boolean(state.settings?.hideSolved&&!session.completed&&solvedCells.has(ck(r,c)));
+      const cls=[
+        "cell",
+        active.has(ck(r,c))?"in-word":"",
+        solvedCells.has(ck(r,c))?"correct":"",
+        masked?"masked":"",
+        word.coords.some(x=>x.r===r&&x.c===c)?"active":"",
+        word.coords[activeCellIndex]?.r===r&&word.coords[activeCellIndex]?.c===c?"cursor":""
+      ].filter(Boolean).join(" ");
+      gridHtml+=`<button type="button" class="${cls}" data-cell="${r},${c}" aria-label="خانة ${cell.number?cell.number:""} ${value||"فارغة"}">
+        ${cell.number?`<span class="num">${cell.number}</span>`:""}<span>${masked?"✓":esc(value)}</span>
+      </button>`;
+    }
+  }
+
+  const solvedN=grid.placed.filter(w=>isWordSolved(w,session)).length;
+  const clueRows=dir=>[...grid.placed].filter(w=>w.dir===dir).sort((a,b)=>a.number-b.number).map(w=>`
+    <button type="button" class="clue-row ${w.entry.id===word.entry.id?"active":""} ${isWordSolved(w,session)?"solved":""}" data-word="${w.entry.id}">
+      <b>${w.number}</b><span>${esc(w.entry.clue)}</span>
+    </button>`).join("");
+  const lockedForWord=i=>solvedCells.has(ck(word.coords[i].r,word.coords[i].c));
+  // Initialize once and persist it with the session.  Rendering can now never
+  // create a new bank or silently trade a tile for a different letter.
+  const crossingIds=new Set(word.coords.flatMap(x=>grid.cells[ck(x.r,x.c)].refs
+    .filter(ref=>ref.id!==word.entry.id).map(ref=>ref.id)));
+  const crossingLetters=grid.placed
+    .filter(w=>crossingIds.has(w.entry.id))
+    .flatMap(w=>w.chars);
+  let bank=session.banks[word.entry.id];
+  if(!bank){
+    bank=createBankState(word.entry,{contextLetters:crossingLetters});
+    // Migration for an in-progress session saved before banks had tile ids.
+    // Each existing editable letter reserves one matching stable tile once.
+    word.coords.forEach((x,i)=>{
+      const value=session.cells[ck(x.r,x.c)];
+      if(value&&!lockedForWord(i)){
+        const tile=bank.tiles.find(t=>t.letter===value&&!Object.values(bank.consumedBySlot).includes(t.id));
+        if(tile) bank=consumeBankTile(bank,i,tile.id);
+      }
+    });
+    session.banks[word.entry.id]=bank;
+  }
+  const used=new Set(Object.values(bank.consumedBySlot).map(Number));
+  const failed=gameFeedback?.unitId===unit.id&&gameFeedback?.wordId===word.entry.id&&gameFeedback?.type==="wrong";
+  const succeeded=gameFeedback?.unitId===unit.id&&gameFeedback?.wordId===word.entry.id&&gameFeedback?.type==="success";
+  const editableAt=i=>!solvedCells.has(ck(word.coords[i].r,word.coords[i].c));
+  const wordSlots=word.coords.map((x,i)=>{
+    const value=session.cells[ck(x.r,x.c)]||"";
+    return `<button type="button" class="answer-slot ${value?"filled":""} ${!editableAt(i)?"locked":""}" data-slot="${i}" aria-label="الخانة ${i+1}${value?` الحرف ${esc(value)}`:" فارغة"}" ${!value||!editableAt(i)?"disabled":""}>${esc(value)}</button>`;
+  }).join("");
+  const wordView=wordViewOpen?`
+    <section class="word-view ${failed?"is-wrong":""} ${succeeded?"is-success":""}" aria-label="إدخال الإجابة" role="dialog" aria-modal="true">
+      <header class="word-view-head">
+        <button type="button" class="word-close" id="close-word" aria-label="العودة إلى اللوحة">×</button>
+        <div><span class="kicker">${esc(unit.title)}</span><h2>${esc(word.entry.clue)}</h2></div>
+        <span class="word-count">${word.chars.length}</span>
+      </header>
+      <main class="word-view-body">
+        <div class="answer-slots" dir="rtl">${wordSlots}</div>
+        ${succeeded?'<p class="word-success" role="status">أحسنت</p>':""}
+      </main>
+      <section class="letter-bank word-letter-bank ${failed?"bank-wrong":""}" aria-label="بنك الحروف">
+        <span class="bank-label">اختر الحروف</span>
+        <div class="bank-tiles">${bank.tiles.map((tile,i)=>`<button type="button" class="letter-tile ${used.has(tile.id)?"used":""}" style="--tile-delay:${i * 24}ms" data-tile="${tile.id}" data-letter="${esc(tile.letter)}" aria-label="الحرف ${esc(tile.letter)}" ${used.has(tile.id)?"disabled":""}>${esc(tile.letter)}</button>`).join("")}</div>
+      </section>
+      <div class="word-actions" aria-label="إجراءات الكلمة"><button type="button" class="btn" id="clear-word-btn">🧹 مسح</button><button type="button" class="btn soft" id="hint-btn">💡 تلميح</button><button type="button" class="btn primary" id="next-word-btn">التالي ⏭</button></div>
+    </section>`:"";
+  appEl.innerHTML=shell(`
+    <section class="game-head">
+      <div><span class="kicker">الوحدة ${unit.id}</span><h1>${esc(unit.title)}</h1><span class="muted">${esc(unit.subtitle)}</span></div>
+      <div class="meter">
+        <span>⭐ ${session.score}</span><span>🔥 ${state.streak||0}</span>
+      </div>
+    </section>
+    <section class="game-layout game-screen">
+      <div class="board-column">
+        <button type="button" class="clue-bar panel clue-bar-button" id="open-current-word" aria-label="افتح كلمة ${esc(word.entry.clue)}">
+          <span class="round-btn" aria-hidden="true">‹</span>
+          <span class="current-clue"><span class="pill">${word.number} · ${word.dir==="H"?"أفقي ←":"عمودي ↓"}</span><b>${esc(word.entry.clue)}</b></span>
+          <span class="open-word-label">حل الكلمة</span>
+        </button>
+        <div class="grid-wrap">
+        <div class="crossword ${failed?"wrong-board":""}" style="grid-template-columns:repeat(${grid.cols},38px)">${gridHtml}</div>
+        </div>
+      </div>
+      <aside class="panel clue-card">
+        <span class="pill">${CATEGORIES[word.entry.category]?.icon||"•"} ${esc(CATEGORIES[word.entry.category]?.label||word.entry.category)}</span>
+        <h3>الكلمات</h3>
+        <div class="clue-groups"><section><h4>أفقي</h4>${clueRows("H")}</section><section><h4>عمودي</h4>${clueRows("V")}</section></div>
+      </aside>
+    </section>${wordView}
+  `);
+  syncWordViewScrollLock();
+
+  const crosswordEl=document.querySelector(".crossword");
+  const gridWrap=document.querySelector(".grid-wrap");
+  let resizeFrame=0;
+  const resizeGrid=()=>{
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame=requestAnimationFrame(()=>{
+      const available=Math.max(0,gridWrap.clientWidth-18);
+      const fit=Math.floor((available-(grid.cols-1)*2)/grid.cols);
+      const size=Math.max(28,Math.min(44,fit));
+      crosswordEl.style.setProperty("--cell-size",`${size}px`);
+      crosswordEl.style.setProperty("--cell-font",`${Math.max(7,Math.min(17,size*.52))}px`);
+      crosswordEl.style.gridTemplateColumns=`repeat(${grid.cols},var(--cell-size))`;
+    });
+  };
+  resizeGrid();
+  const gridObserver=new ResizeObserver(resizeGrid);
+  gridObserver.observe(gridWrap);
+  boardResizeCleanup=()=>{cancelAnimationFrame(resizeFrame);gridObserver.disconnect();};
+  requestAnimationFrame(()=>{
+    gridWrap.scrollLeft=previousGridLeft;
+    gridWrap.scrollTop=previousGridTop;
+    if(wordViewOpen){
+      const body=document.querySelector(".word-view-body");
+      if(body) body.scrollTop=previousWordScroll;
+    }
+  });
+
+  function persist(){
+    state.units=state.units||{};
+    state.units[unit.id]={...session};
+    saveState(state);
+  }
+  function setActive(id,index=0,open=true){
+    activeWordId=id;
+    activeCellIndex=index;
+    wordStartedAt=Date.now();
+    wordViewOpen=open;
+    renderGame(unit.id);
+  }
+  function syncCurrentWordDom(){
+    const currentBank=session.banks[word.entry.id]||bank;
+    const usedNow=new Set(Object.values(currentBank?.consumedBySlot||{}).map(Number));
+    word.coords.forEach((cell,i)=>{
+      const value=session.cells[ck(cell.r,cell.c)]||"";
+      const slot=document.querySelector(`[data-slot="${i}"]`);
+      if(slot){
+        slot.textContent=value;
+        slot.classList.toggle("filled",Boolean(value));
+        slot.disabled=!value||!editableAt(i);
+      }
+      const boardLetter=document.querySelector(`[data-cell="${cell.r},${cell.c}"] span:last-child`);
+      if(boardLetter) boardLetter.textContent=value;
+    });
+    document.querySelectorAll("[data-tile]").forEach(tile=>{
+      const isUsed=usedNow.has(Number(tile.dataset.tile));
+      tile.disabled=isUsed;
+      tile.classList.toggle("used",isUsed);
+    });
+  }
+
+  function clearCurrentWord(){
+    word.coords.forEach((x,i)=>{
+      if(editableAt(i)) delete session.cells[ck(x.r,x.c)];
+    });
+    bank=resetBankTiles(session.banks[word.entry.id]||bank);
+    session.banks[word.entry.id]=bank;
+    activeCellIndex=0;
+    gameFeedback=null;
+    persist();
+    syncCurrentWordDom();
+    document.querySelector(".word-view")?.classList.remove("is-wrong");
+  }
+  function checkCompletedWord(){
+    if(!word.coords.every(x=>session.cells[ck(x.r,x.c)])) return false;
+    if(wordValue(word,session)===word.chars.join("")){ solveWord(word,false); return true; }
+    session.mistakes++;
+    updateMastery(state,word.entry.category,{
+      correct:false,
+      difficulty:word.entry.difficulty,
+      hints:session.wordHints?.[word.entry.id]||0,
+      timeSeconds:Math.max(1,Math.round((Date.now()-wordStartedAt)/1000))
+    });
+    gameFeedback={unitId:unit.id,wordId:word.entry.id,type:"wrong"};
+    persist();
+    document.querySelector(".word-view")?.classList.add("is-wrong");
+    setTimeout(()=>{
+      if(gameFeedback?.unitId!==unit.id||gameFeedback?.wordId!==word.entry.id||gameFeedback?.type!=="wrong") return;
+      clearCurrentWord();
+    },520);
+    return true;
+  }
+  function patchWordEntry(slotIndex,tileId,char){
+    const slot=document.querySelector(`[data-slot="${slotIndex}"]`);
+    if(slot){
+      slot.textContent=char;
+      slot.disabled=false;
+      slot.classList.add("filled","just-filled");
+      requestAnimationFrame(()=>slot.classList.remove("just-filled"));
+    }
+    const tile=document.querySelector(`[data-tile="${tileId}"]`);
+    if(tile){tile.disabled=true;tile.classList.add("used");}
+  }
+  function writeLetter(raw,tileId){
+    const char=Array.from(normalizeArabic(raw))[0];
+    if(!char)return;
+    const emptyIndex=word.coords.findIndex((x,i)=>editableAt(i)&&!session.cells[ck(x.r,x.c)]);
+    const targetIndex=emptyIndex<0?activeCellIndex:emptyIndex;
+    const cell=word.coords[targetIndex];
+    if(!cell||solvedCells.has(ck(cell.r,cell.c)))return;
+    session.cells[ck(cell.r,cell.c)]=char;
+    bank=consumeBankTile(session.banks[word.entry.id]||bank,targetIndex,tileId);
+    session.banks[word.entry.id]=bank;
+    activeCellIndex=targetIndex;
+    persist();
+    const next=nextCellInWord(word,activeCellIndex,1);
+    activeCellIndex=next===activeCellIndex?activeCellIndex:next;
+    if(!checkCompletedWord()) patchWordEntry(targetIndex,tileId,char);
+  }
+  function solveWord(target,force=false){
+    if(!session.solved[target.entry.id]){
+      session.solved[target.entry.id]=true;
+      const elapsed=Math.max(1,Math.round((Date.now()-wordStartedAt)/1000));
+      const wordHints=session.wordHints?.[target.entry.id]||0;
+      const earned=Math.max(35,90+target.entry.difficulty*32-wordHints*18-(force?55:0));
+      session.score+=earned;
+      applyXp(state,Math.round(earned*.45));
+      updateStreak(state);
+      updateMastery(state,target.entry.category,{correct:true,difficulty:target.entry.difficulty,hints:wordHints,timeSeconds:elapsed});
+      toast(`صحيحة! +${earned}`);
+    }
+    const all=grid.placed.every(w=>session.solved[w.entry.id]);
+    if(all){
+      const penalty=session.hints+session.mistakes;
+      session.completed=true;
+      session.completedAt=new Date().toISOString();
+      session.stars=penalty<=2?3:penalty<=6?2:1;
+      const bonus=200+session.stars*80;
+      session.score+=bonus;
+      applyXp(state,bonus);
+      state.units[unit.id]={...session};
+      saveState(state);
+      gameFeedback={unitId:unit.id,wordId:target.entry.id,type:"success"};
+      document.querySelector(".word-view")?.classList.add("is-success");
+      setTimeout(()=>renderResult(unit,grid,session),450);
+      return true;
+    }
+    gameFeedback={unitId:unit.id,wordId:target.entry.id,type:"success"};
+    persist();
+    document.querySelector(".word-view")?.classList.add("is-success");
+    const success=document.querySelector(".word-success");
+    if(success) success.textContent="أحسنت";
+    // A solved answer gets a brief confirmation, then the next unsolved word
+    // opens without sending the player back through the board.
+    setTimeout(()=>{
+      const next=grid.placed.find(w=>!session.solved[w.entry.id]);
+      gameFeedback=null;
+      if(next) setActive(next.entry.id,0,true);
+    },620);
+    return true;
+  }
+
+  document.querySelector("#open-current-word")?.addEventListener("click",()=>{wordViewOpen=true;renderGame(unit.id);});
+  document.querySelector("#close-word")?.addEventListener("click",()=>{wordViewOpen=false;renderGame(unit.id);});
+  document.querySelector("#hint-btn")?.addEventListener("click",()=>{
+    const target=word.coords.find((x,i)=>editableAt(i)&&(session.cells[ck(x.r,x.c)]||"")!==word.chars[i]);
+    if(!target){toast("كل الحروف موجودة — تحقق من الجواب");return;}
+    const i=word.coords.indexOf(target);
+    let currentBank=session.banks[word.entry.id]||bank;
+    const oldTile=currentBank.consumedBySlot?.[i];
+    if(oldTile!==undefined) currentBank=returnBankTile(currentBank,i);
+    const usedIds=new Set(Object.values(currentBank.consumedBySlot||{}).map(Number));
+    const hintTile=currentBank.tiles.find(tile=>tile.letter===word.chars[i]&&!usedIds.has(tile.id));
+    session.cells[ck(target.r,target.c)]=word.chars[i];
+    if(hintTile) currentBank=consumeBankTile(currentBank,i,hintTile.id);
+    bank=currentBank;
+    session.banks[word.entry.id]=currentBank;
+    session.hints++;
+    session.wordHints[word.entry.id]=(session.wordHints[word.entry.id]||0)+1;
+    session.score=Math.max(0,session.score-15);
+    toast("كشفنا حرفًا واحدًا");
+    activeCellIndex=i;
+    persist();
+    syncCurrentWordDom();
+    checkCompletedWord();
+  });
+  document.querySelector("#clear-word-btn")?.addEventListener("click",clearCurrentWord);
+  document.querySelector("#next-word-btn")?.addEventListener("click",()=>{
+    const pending=grid.placed.filter(w=>!session.solved[w.entry.id]);
+    const here=pending.findIndex(w=>w.entry.id===word.entry.id);
+    const next=pending[(here+1+pending.length)%pending.length];
+    if(next&&next.entry.id!==word.entry.id) setActive(next.entry.id,0,true);
+    else toast("هذه آخر كلمة غير محلولة");
+  });
+  document.querySelectorAll("[data-word]").forEach(el=>el.addEventListener("click",()=>setActive(el.dataset.word,0,true)));
+  document.querySelectorAll("[data-cell]").forEach(el=>el.addEventListener("click",()=>{
+    const [r,c]=el.dataset.cell.split(",").map(Number);
+    const words=wordsAtCell(grid,r,c);
+    if(!words.length)return;
+    const valueKey=ck(r,c);
+    const selected=words.find(w=>w.entry.id===activeWordId);
+    const next=selected&&words.length>1?words[(words.indexOf(selected)+1)%words.length]:words[0];
+    setActive(next.entry.id,entryIndexAtCell(next,r,c),true);
+  }));
+  document.querySelectorAll("[data-slot]").forEach(el=>el.addEventListener("click",()=>{
+    const i=Number(el.dataset.slot), cell=word.coords[i];
+    if(!editableAt(i)||!session.cells[ck(cell.r,cell.c)]) return;
+    delete session.cells[ck(cell.r,cell.c)];
+    bank=returnBankTile(session.banks[word.entry.id]||bank,i);
+    session.banks[word.entry.id]=bank;
+    activeCellIndex=i;
+    persist();
+    syncCurrentWordDom();
+  }));
+  document.querySelectorAll("[data-tile]").forEach(el=>el.addEventListener("click",()=>writeLetter(el.dataset.letter,Number(el.dataset.tile))));
+  if(boardKeyHandler) document.removeEventListener("keydown",boardKeyHandler);
+  boardKeyHandler=function onKey(e){
+    if(e.ctrlKey||e.metaKey||e.altKey)return;
+    if(!wordViewOpen)return;
+    if(e.key==="Escape"){e.preventDefault();wordViewOpen=false;renderGame(unit.id);}
+  };
+  document.addEventListener("keydown",boardKeyHandler);
+}
+
+function renderMedia(media){
+  if(media.type==="image") return `<img src="${esc(media.url)}" alt="${esc(media.alt||"صورة السؤال")}" style="width:100%;max-height:220px;object-fit:cover;border-radius:14px;margin:10px 0" />`;
+  if(media.type==="emoji") return `<div style="font-size:4rem;text-align:center;padding:12px">${esc(media.value)}</div>`;
+  return "";
+}
+
+function renderResult(unit,grid,session){
+  state=loadState();
+  const facts=grid.placed.filter(w=>w.entry.fact).slice(0,5).map(w=>`<div class="fact"><b>${esc(w.entry.answer)}</b><br>${esc(w.entry.fact)}</div>`).join("");
+  appEl.innerHTML=shell(`
+    <section class="result panel celebration celebration-screen">
+      <div class="big">${"★".repeat(session.stars||1)}${"☆".repeat(3-(session.stars||1))}</div>
+      <span class="kicker">اكتملت الوحدة ${unit.id}</span>
+      <h1 style="font-size:2.5rem;margin:10px 0">${esc(unit.title)}</h1>
+      <p class="muted">جمعت <b style="color:var(--ink)">${session.score}</b> نقطة · استخدمت ${session.hints} مساعدات · ${session.mistakes} محاولات غير صحيحة.</p>
+      <div class="sep"></div>
+      <h3 style="text-align:right">هل تعلم؟</h3>
+      ${facts||'<p class="muted">ستظهر هنا بطاقات المعرفة بعد الحل.</p>'}
+      <div class="nav" style="justify-content:center;margin-top:18px">
+        <button type="button" class="btn primary" id="next-unit-result">الوحدة التالية</button>
+        <button type="button" class="btn" data-route="profile">تقدّمي</button>
+        <button type="button" class="btn" data-route="home">كل الوحدات</button>
+      </div>
+    </section>
+  `);
+  document.querySelector("#next-unit-result")?.addEventListener("click",()=>{
+    const next=PUBLISHED_UNITS.find(u=>u.id>unit.id&&!state.units?.[u.id]?.completed)||PUBLISHED_UNITS.find(u=>u.id>unit.id)||PUBLISHED_UNITS[0];
+    activeWordId=null;
+    navigate(`play/${next.id}`);
+  });
+}
+
+function renderProfile(){
+  state=loadState();
+  const mastery=Object.entries(CATEGORIES).map(([id,c])=>{
+    const m=state.mastery?.[id]||{rating:1000,attempts:0,correct:0};
+    const p=pct(m.rating);
+    return `<div class="mastery-row"><header><span>${c.icon} ${esc(c.label)}</span><span>${p}%</span></header><div class="progress"><i style="width:${p}%"></i></div></div>`;
+  }).join("");
+  const user=currentUser();
+  const accountText=user?`متصل: ${esc(user.email||"حساب سحابي")}`:cloudEnabled()?"غير مسجّل الدخول — تقدمك محفوظ محليًا الآن.":"الوضع المحلي فعّال. أضف Supabase في config.js لتفعيل الحسابات والمزامنة.";
+
+  appEl.innerHTML=shell(`
+    <section class="section-head"><div><span class="kicker">ملف اللاعب</span><h2 style="font-size:2rem">${esc(state.profile?.displayName||"ضيف")}</h2><p>المستوى ${state.level||1} · ${state.xp||0} XP · ${state.streak||0} أيام متتالية</p></div></section>
+    <section class="profile-grid">
+      <div class="panel">
+        <h3>الحساب</h3>
+        <div class="field"><label>الاسم داخل اللعبة</label><input id="display-name" value="${esc(state.profile?.displayName||"ضيف")}" /></div>
+        <button type="button" class="btn primary" id="save-name">حفظ</button>
+        <div class="sep"></div>
+        <p class="muted">${accountText}</p>
+        ${user?'<button type="button" class="btn danger" id="logout-btn">تسجيل الخروج</button>':'<button type="button" class="btn" data-route="login">تسجيل الدخول</button>'}
+        <div class="sep"></div>
+        <div class="field setting-row"><label for="hide-solved">إخفاء الحلول</label><input id="hide-solved" type="checkbox" ${state.settings?.hideSolved?"checked":""} /><small class="muted">يبقي حروف الكلمات المحلولة مخفية على اللوحة حتى احتفال إكمال الوحدة.</small></div>
+        <div class="sep"></div>
+        <div class="stats">
+          <div class="stat"><b>${completedCount()}</b><span>وحدة مكتملة</span></div>
+          <div class="stat"><b>${state.xp||0}</b><span>XP</span></div>
+          <div class="stat"><b>${state.streak||0}</b><span>Streak</span></div>
+        </div>
+      </div>
+      <div class="panel"><h3>إتقان الأبواب</h3><p class="muted">يتغيّر بحسب صحة الإجابة، الصعوبة، السرعة والمساعدات.</p>${mastery}</div>
+    </section>
+  `);
+
+  document.querySelector("#save-name")?.addEventListener("click",()=>{
+    const name=document.querySelector("#display-name").value.trim().slice(0,40)||"ضيف";
+    state.profile={...(state.profile||{}),displayName:name};
+    saveState(state);
+    toast("تم حفظ الاسم");
+    renderProfile();
+  });
+  document.querySelector("#logout-btn")?.addEventListener("click",async()=>{
+    await signOut();
+    toast("تم تسجيل الخروج");
+    renderProfile();
+  });
+  document.querySelector("#hide-solved")?.addEventListener("change",event=>{
+    state.settings={...(state.settings||{}),hideSolved:event.target.checked};
+    saveState(state);
+    toast(event.target.checked?"فُعّل إخفاء الحلول":"أُظهرَت الحلول على اللوحة");
+  });
+}
+
+function renderLogin(){
+  const user=currentUser();
+  if(user){navigate("profile");return;}
+
+  appEl.innerHTML=shell(`
+    <section class="login-box panel">
+      <span class="kicker">حساب اللاعب</span><h1 style="font-size:2.4rem">احفظ تقدّمك</h1>
+      <p class="muted">الحساب يزامن الوحدات والنقاط ومستوى كل باب بين أجهزتك.</p>
+      ${!authInfo.enabled?'<div class="notice">Supabase غير مفعّل في هذا الفرع بعد. اللعبة تعمل كاملة محليًا، ولتفعيل الحسابات ضع Project URL وAnon Key العام في <code>config.js</code> ثم نفّذ مخطط قاعدة البيانات.</div>':""}
+      <form id="auth-form">
+        <div class="field"><label>البريد الإلكتروني</label><input id="email" type="email" required /></div>
+        <div class="field"><label>كلمة المرور</label><input id="password" type="password" minlength="6" required /></div>
+        <div class="actions"><button class="btn primary" type="submit">دخول</button><button class="btn" id="signup-btn" type="button">إنشاء حساب</button></div>
+      </form>
+    </section>
+  `);
+
+  const form=document.querySelector("#auth-form");
+  form.addEventListener("submit",async e=>{
+    e.preventDefault();
+    if(!authInfo.enabled){toast("فعّل Supabase أولًا");return;}
+    try{
+      await signIn(document.querySelector("#email").value,document.querySelector("#password").value);
+      toast("أهلًا بك");
+      navigate("profile");
+    }catch(err){toast(err.message||"تعذر تسجيل الدخول");}
+  });
+  document.querySelector("#signup-btn").addEventListener("click",async()=>{
+    if(!authInfo.enabled){toast("فعّل Supabase أولًا");return;}
+    try{
+      await signUp(document.querySelector("#email").value,document.querySelector("#password").value);
+      toast("تم إنشاء الحساب — تحقق من بريدك إذا كان التأكيد مفعّلًا");
+    }catch(err){toast(err.message||"تعذر إنشاء الحساب");}
+  });
+}
+
+function navigate(nextRoute,{replace=false,forceTop=nextRoute.startsWith("play/")}={}){
+  rememberRouteScroll();
+  currentRoute=nextRoute;
+  activeWordId=null;
+  wordViewOpen=false;
+  syncWordViewScrollLock();
+  history[replace?"replaceState":"pushState"]({route:nextRoute},"",urlForRoute(nextRoute));
+  route();
+  restoreRouteScroll(nextRoute,forceTop);
+}
+
+function route(){
+  if(boardKeyHandler){document.removeEventListener("keydown",boardKeyHandler);boardKeyHandler=null;}
+  boardResizeCleanup?.();
+  boardResizeCleanup=null;
+  wordViewOpen=false;
+  syncWordViewScrollLock();
+  if(currentRoute.startsWith("play/")){renderGame(Number(currentRoute.split("/")[1]));return;}
+  if(currentRoute==="profile"){renderProfile();return;}
+  if(currentRoute==="login"){renderLogin();return;}
+  renderHome();
+}
+
+window.addEventListener("popstate",()=>{
+  rememberRouteScroll();
+  currentRoute=routeFromLocation();
+  activeWordId=null;
+  wordViewOpen=false;
+  route();
+  restoreRouteScroll(currentRoute,false);
+});
+
+appEl.addEventListener("click",event=>{
+  const control=event.target.closest("[data-route]");
+  if(!control)return;
+  event.preventDefault();
+  navigate(control.dataset.route);
+});
+window.addEventListener("kalimat-auth-changed",()=>{
+  state=loadState();
+  route();
+});
+
+(async function boot(){
+  authInfo=await initCloud();
+  state=loadState();
+  currentRoute=routeFromLocation();
+  history.replaceState({route:currentRoute},"",urlForRoute(currentRoute));
+  route();
+  restoreRouteScroll(currentRoute,true);
+})();
