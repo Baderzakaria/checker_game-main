@@ -83,3 +83,9 @@ h1{font-size:clamp(2.5rem,7vw,5.6rem);line-height:.98;margin:18px 0 14px;letter-
   .word-view{padding:calc(14px + env(safe-area-inset-top)) 14px calc(12px + env(safe-area-inset-bottom));z-index:90}.word-view-head{gap:9px}.word-view-head h2{font-size:1.25rem}.word-letter-bank{position:static;inset:auto;z-index:auto;margin-top:auto;padding:14px 0 0;border-radius:0;background:transparent;box-shadow:none;backdrop-filter:none}.word-view .letter-tile{width:max(44px,11vw);height:max(44px,11vw)}.open-word-label{display:none}
 }
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}.wrong-board,.bank-wrong .letter-tile,.celebration:before{animation:none!important}}
+
+/* Native momentum scroll regions; the entry layer owns scrolling while open. */
+.grid-wrap,.clue-card,.word-view{-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.clue-card{max-height:calc(100dvh - 96px);overflow:auto}
+.word-view{overflow:auto}
+.letter-tile.used{display:none}

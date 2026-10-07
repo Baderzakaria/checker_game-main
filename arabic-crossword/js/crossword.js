@@ -15,21 +15,49 @@ export function answerChars(entry){
 }
 
 const BANK_DISTRACTORS=Array.from("ابتثجحخدذرزسشصضطظعغفقكلمنهويءئؤةى");
+const CONFUSABLES={
+  "ا":"أإآى", "أ":"اإآ", "إ":"اأآ", "ى":"اي", "ة":"ته", "ه":"ةح",
+  "ب":"تثن", "ت":"بث", "ث":"بت", "ج":"حخ", "ح":"جخه", "خ":"جح",
+  "د":"ذ", "ذ":"د", "ر":"ز", "ز":"ر", "س":"ش", "ش":"س",
+  "ص":"ض", "ض":"ص", "ط":"ظ", "ظ":"ط", "ع":"غ", "غ":"ع",
+  "ف":"ق", "ق":"ف", "ك":"ل", "ل":"ك", "و":"ؤ", "ي":"ئ"
+};
+
+function seededRandom(seed=""){
+  let value=2166136261;
+  for(const ch of String(seed)) value=Math.imul(value^ch.charCodeAt(0),16777619);
+  return ()=>{
+    value+=0x6D2B79F5;
+    let x=value;
+    x=Math.imul(x^(x>>>15),x|1); x^=x+Math.imul(x^(x>>>7),x|61);
+    return ((x^(x>>>14))>>>0)/4294967296;
+  };
+}
 
 // A bank is deliberately just a bag of letters: callers never receive a
 // "correct" marker, and Fisher-Yates means answer letters have no stable
 // position to give the answer away.
-export function createLetterBank(entry,{distractorCount,random=Math.random}={}){
+export function createLetterBank(entry,{distractorCount,random,contextLetters=[]}={}){
   const answer=answerChars(entry);
   // Short answers get a few decoys; longer ones give up decoys to remain
   // focused at twelve tiles whenever their answer length allows it.
   if(distractorCount===undefined){
-    distractorCount=Math.min(6,Math.max(3,12-answer.length));
+    // Legacy callers without a difficulty retain the historical six-decoy
+    // bank; authored level-one entries deliberately stay lighter.
+    const difficulty=entry.difficulty===undefined?3:(Number(entry.difficulty)||1);
+    distractorCount=Math.min(difficulty>=2?6:3,Math.max(3,12-answer.length));
     distractorCount=Math.min(distractorCount,Math.max(0,12-answer.length));
   }
+  random=random||seededRandom(entry.id||entry.answer);
+  // Difficulty is expressed in the choices, not by exposing extra facts:
+  // adults see more decoys that are genuinely easy to confuse with the answer.
+  const smartPool=[...new Set(answer.flatMap(ch=>Array.from(CONFUSABLES[ch]||"")))];
+  const crossingPool=[...new Set(contextLetters.filter(ch=>ch&&!answer.includes(ch)))];
   const distractors=[];
   for(let i=0;i<distractorCount;i++){
-    distractors.push(BANK_DISTRACTORS[Math.floor(random()*BANK_DISTRACTORS.length)]);
+    const pool=(entry.difficulty>=2 && smartPool.length && i<Math.ceil(distractorCount*.7))
+      ?smartPool : (crossingPool.length&&i%3===2 ? crossingPool : BANK_DISTRACTORS);
+    distractors.push(pool[Math.floor(random()*pool.length)]);
   }
   const letters=[...answer,...distractors];
   for(let i=letters.length-1;i>0;i--){
@@ -38,6 +66,21 @@ export function createLetterBank(entry,{distractorCount,random=Math.random}={}){
   }
   return letters;
 }
+
+// Bank state is deliberately separate from rendering.  Tile ids make repeated
+// letters unambiguous and guarantee that a consumed tile is the tile returned.
+export function createBankState(entry,options={}){
+  return {tiles:createLetterBank(entry,options).map((letter,id)=>({id,letter})),consumedBySlot:{}};
+}
+export function consumeBankTile(bank,slot,tileId){
+  if(Object.values(bank.consumedBySlot).includes(tileId)) return bank;
+  return {...bank,consumedBySlot:{...bank.consumedBySlot,[slot]:tileId}};
+}
+export function returnBankTile(bank,slot){
+  const consumedBySlot={...bank.consumedBySlot}; delete consumedBySlot[slot];
+  return {...bank,consumedBySlot};
+}
+export function resetBankTiles(bank){ return {...bank,consumedBySlot:{}}; }
 
 // These small pure helpers keep browser input behavior testable.  Horizontal
 // Arabic entries deliberately move toward decreasing columns.
@@ -128,6 +171,9 @@ function possiblePlacements(grid,entry,size){
         const startR=r-dr*i, startC=c-dc*i;
         const valid=canPlace(grid,startR,startC,dir,chars,size);
         if(!valid) continue;
+        // An exact same-direction overlay is not a crossword crossing and
+        // would duplicate a placement when two answers have identical text.
+        if(valid.intersections===chars.length) continue;
         const oldArea=boundsOf(grid).area;
         const simulated=new Map(grid);
         for(const x of valid.cells) set(simulated,x.r,x.c,x.ch);
@@ -145,16 +191,17 @@ function possiblePlacements(grid,entry,size){
   return out.sort((a,b)=>b.score-a.score);
 }
 
-function buildWithRoot(entries,root,size=27){
+function buildWithRoot(entries,root,rootDir="H",size=27){
   const grid=new Map();
   const rootChars=answerChars(root);
   const center=Math.floor(size/2);
-  const startCol=center+Math.floor(rootChars.length/2);
-  const first=canPlace(grid,center,startCol,"H",rootChars,size);
+  const startRow=rootDir==="V"?center-Math.floor(rootChars.length/2):center;
+  const startCol=rootDir==="H"?center+Math.floor(rootChars.length/2):center;
+  const first=canPlace(grid,startRow,startCol,rootDir,rootChars,size);
   if(!first) return null;
   for(const cell of first.cells) set(grid,cell.r,cell.c,cell.ch);
 
-  const placed=[{entry:root,row:center,col:startCol,dir:"H",chars:rootChars,intersections:0}];
+  const placed=[{entry:root,row:startRow,col:startCol,dir:rootDir,chars:rootChars,intersections:0}];
   const remaining=entries.filter(e=>e.id!==root.id);
   let totalIntersections=0;
 
@@ -228,16 +275,18 @@ export function generateCrossword(entries,{size=27}={}){
   const roots=[...usable]
     .map(e=>({e,s:connectivity(e,usable)}))
     .sort((a,b)=>b.s-a.s||answerChars(b.e).length-answerChars(a.e).length)
-    .slice(0,Math.min(8,usable.length))
     .map(x=>x.e);
 
   let best=null;
-  for(const root of roots){
-    const candidate=buildWithRoot(usable,root,size);
+  for(const root of roots) for(const rootDir of ["H","V"]){
+    const candidate=buildWithRoot(usable,root,rootDir,size);
     if(!candidate) continue;
     const compactness=1-(candidate.bounds.area/(size*size));
+    const ratio=candidate.bounds.maxR-candidate.bounds.minR+1;
+    const width=candidate.bounds.maxC-candidate.bounds.minC+1;
+    const aspect=Math.min(ratio,width)/Math.max(ratio,width);
     const score=candidate.placed.length*1000+candidate.totalIntersections*80
-      +candidate.density*180+compactness*25;
+      +candidate.density*180+compactness*25+aspect*260;
     if(!best || score>best.score) best={...candidate,score};
   }
   if(!best) throw new Error("Could not generate crossword");

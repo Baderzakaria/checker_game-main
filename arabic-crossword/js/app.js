@@ -1,5 +1,5 @@
 import {CATEGORIES,PUBLISHED_UNITS,unitSlots,getUnit,UNIT_COUNT} from "./content.js";
-import {generateCrossword,normalizeArabic,entryIndexAtCell,nextCellInWord,wordsAtCell,createLetterBank} from "./crossword.js";
+import {generateCrossword,normalizeArabic,entryIndexAtCell,nextCellInWord,wordsAtCell,createBankState,consumeBankTile,returnBankTile,resetBankTiles} from "./crossword.js";
 import {
   loadState,saveState,applyXp,updateStreak,updateMastery,
   initCloud,cloudEnabled,currentUser,signIn,signUp,signOut
@@ -17,6 +17,21 @@ let boardKeyHandler=null;
 let gameFeedback=null;
 let gameRenderFrame=null;
 let boardResizeCleanup=null;
+let lockedScrollY=null;
+let bodyStyleBeforeLock="";
+
+function syncWordViewScrollLock(){
+  if(wordViewOpen&&lockedScrollY===null){
+    lockedScrollY=window.scrollY;
+    bodyStyleBeforeLock=document.body.getAttribute("style")||"";
+    Object.assign(document.body.style,{position:"fixed",top:`-${lockedScrollY}px`,left:"0",right:"0",width:"100%",overflow:"hidden"});
+  }else if(!wordViewOpen&&lockedScrollY!==null){
+    const y=lockedScrollY; lockedScrollY=null;
+    if(bodyStyleBeforeLock) document.body.setAttribute("style",bodyStyleBeforeLock);
+    else document.body.removeAttribute("style");
+    requestAnimationFrame(()=>window.scrollTo(0,y));
+  }
+}
 
 const esc=(s="")=>String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
 const ck=(r,c)=>`${r},${c}`;
@@ -128,6 +143,7 @@ function getSession(unitId){
     hints:existing.hints||0,
     mistakes:existing.mistakes||0,
     score:existing.score||0,
+    banks:existing.banks||{},
     startedAt:existing.startedAt||new Date().toISOString(),
     completed:Boolean(existing.completed),
     stars:existing.stars||0
@@ -191,17 +207,28 @@ function renderGame(unitId){
       <b>${w.number}</b><span>${esc(w.entry.clue)}</span>
     </button>`).join("");
   const lockedForWord=i=>solvedCells.has(ck(word.coords[i].r,word.coords[i].c));
-  const bank=createLetterBank(word.entry);
-  // A visible letter in an editable cell reserves one matching tile. Locked
-  // crossing letters are inherited from the board and do not consume a tile.
-  const used=[];
-  word.coords.forEach((x,i)=>{
-    const value=session.cells[ck(x.r,x.c)];
-    if(value&&!lockedForWord(i)){
-      const tile=bank.findIndex((letter,index)=>letter===value&&!used.includes(index));
-      if(tile>=0) used.push(tile);
-    }
-  });
+  // Initialize once and persist it with the session.  Rendering can now never
+  // create a new bank or silently trade a tile for a different letter.
+  const crossingIds=new Set(word.coords.flatMap(x=>grid.cells[ck(x.r,x.c)].refs
+    .filter(ref=>ref.id!==word.entry.id).map(ref=>ref.id)));
+  const crossingLetters=grid.placed
+    .filter(w=>crossingIds.has(w.entry.id))
+    .flatMap(w=>w.chars);
+  let bank=session.banks[word.entry.id];
+  if(!bank){
+    bank=createBankState(word.entry,{contextLetters:crossingLetters});
+    // Migration for an in-progress session saved before banks had tile ids.
+    // Each existing editable letter reserves one matching stable tile once.
+    word.coords.forEach((x,i)=>{
+      const value=session.cells[ck(x.r,x.c)];
+      if(value&&!lockedForWord(i)){
+        const tile=bank.tiles.find(t=>t.letter===value&&!Object.values(bank.consumedBySlot).includes(t.id));
+        if(tile) bank=consumeBankTile(bank,i,tile.id);
+      }
+    });
+    session.banks[word.entry.id]=bank;
+  }
+  const used=new Set(Object.values(bank.consumedBySlot).map(Number));
   const failed=gameFeedback?.unitId===unit.id&&gameFeedback?.wordId===word.entry.id&&gameFeedback?.type==="wrong";
   const succeeded=gameFeedback?.unitId===unit.id&&gameFeedback?.wordId===word.entry.id&&gameFeedback?.type==="success";
   const editableAt=i=>!solvedCells.has(ck(word.coords[i].r,word.coords[i].c));
@@ -223,7 +250,7 @@ function renderGame(unitId){
       </main>
       <section class="letter-bank word-letter-bank ${failed?"bank-wrong":""}" aria-label="بنك الحروف">
         <span class="bank-label">اختر الحروف</span>
-        <div class="bank-tiles">${bank.map((letter,i)=>`<button class="letter-tile ${used.includes(i)?"used":""}" style="--tile-delay:${i * 24}ms" data-tile="${i}" data-letter="${esc(letter)}" aria-label="الحرف ${esc(letter)}" ${used.includes(i)?"disabled":""}>${esc(letter)}</button>`).join("")}</div>
+        <div class="bank-tiles">${bank.tiles.map((tile,i)=>`<button class="letter-tile ${used.has(tile.id)?"used":""}" style="--tile-delay:${i * 24}ms" data-tile="${tile.id}" data-letter="${esc(tile.letter)}" aria-label="الحرف ${esc(tile.letter)}" ${used.has(tile.id)?"disabled":""}>${esc(tile.letter)}</button>`).join("")}</div>
       </section>
     </section>`:"";
   appEl.innerHTML=shell(`
@@ -251,6 +278,7 @@ function renderGame(unitId){
       </aside>
     </section>${wordView}
   `);
+  syncWordViewScrollLock();
 
   const crosswordEl=document.querySelector(".crossword");
   const gridWrap=document.querySelector(".grid-wrap");
@@ -295,17 +323,20 @@ function renderGame(unitId){
     persist(); renderGame(unit.id);
     setTimeout(()=>{
       word.coords.forEach((x,i)=>{if(!solvedCells.has(ck(x.r,x.c))) delete session.cells[ck(x.r,x.c)];});
+      session.banks[word.entry.id]=resetBankTiles(bank);
       gameFeedback=null; persist(); renderGame(unit.id);
     },520);
   }
-  function writeLetter(raw){
+  function writeLetter(raw,tileId){
     const char=Array.from(normalizeArabic(raw))[0];
     if(!char)return;
     const emptyIndex=word.coords.findIndex((x,i)=>editableAt(i)&&!session.cells[ck(x.r,x.c)]);
-    const cell=word.coords[emptyIndex<0?activeCellIndex:emptyIndex];
+    const targetIndex=emptyIndex<0?activeCellIndex:emptyIndex;
+    const cell=word.coords[targetIndex];
     if(!cell||solvedCells.has(ck(cell.r,cell.c)))return;
     session.cells[ck(cell.r,cell.c)]=char;
-    activeCellIndex=emptyIndex<0?activeCellIndex:emptyIndex;
+    session.banks[word.entry.id]=consumeBankTile(bank,targetIndex,tileId);
+    activeCellIndex=targetIndex;
     persist();
     const next=nextCellInWord(word,activeCellIndex,1);
     activeCellIndex=next===activeCellIndex?activeCellIndex:next;
@@ -378,9 +409,10 @@ function renderGame(unitId){
     const i=Number(el.dataset.slot), cell=word.coords[i];
     if(!editableAt(i)||!session.cells[ck(cell.r,cell.c)]) return;
     delete session.cells[ck(cell.r,cell.c)];
+    session.banks[word.entry.id]=returnBankTile(bank,i);
     activeCellIndex=i; persist(); renderGame(unit.id);
   }));
-  document.querySelectorAll("[data-tile]").forEach(el=>el.addEventListener("click",()=>writeLetter(el.dataset.letter)));
+  document.querySelectorAll("[data-tile]").forEach(el=>el.addEventListener("click",()=>writeLetter(el.dataset.letter,Number(el.dataset.tile))));
   if(boardKeyHandler) document.removeEventListener("keydown",boardKeyHandler);
   boardKeyHandler=function onKey(e){
     if(e.ctrlKey||e.metaKey||e.altKey)return;
@@ -508,6 +540,7 @@ function route(){
   boardResizeCleanup?.();
   boardResizeCleanup=null;
   wordViewOpen=false;
+  syncWordViewScrollLock();
   const hash=location.hash||"#home";
   if(hash.startsWith("#play/")){renderGame(Number(hash.split("/")[1]));return;}
   if(hash==="#profile"){renderProfile();return;}
