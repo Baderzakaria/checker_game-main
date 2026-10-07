@@ -14,6 +14,8 @@ let activeCellIndex=0;
 let wordStartedAt=Date.now();
 let boardKeyHandler=null;
 let gameFeedback=null;
+let gameRenderFrame=null;
+let boardResizeCleanup=null;
 
 const esc=(s="")=>String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]));
 const ck=(r,c)=>`${r},${c}`;
@@ -137,6 +139,8 @@ const selectedWord=grid=>grid.placed.find(w=>w.entry.id===activeWordId)||grid.pl
 const activeCoords=word=>new Set(word.coords.map(x=>ck(x.r,x.c)));
 
 function renderGame(unitId){
+  boardResizeCleanup?.();
+  boardResizeCleanup=null;
   state=loadState();
   const unit=getUnit(unitId);
   if(!unit){location.hash="#home";return;}
@@ -174,7 +178,7 @@ function renderGame(unitId){
         word.coords.some(x=>x.r===r&&x.c===c)?"active":"",
         word.coords[activeCellIndex]?.r===r&&word.coords[activeCellIndex]?.c===c?"cursor":""
       ].filter(Boolean).join(" ");
-      gridHtml+=`<button class="${cls}" data-cell="${r},${c}" aria-label="خانة">
+      gridHtml+=`<button class="${cls}" data-cell="${r},${c}" aria-label="خانة ${cell.number?cell.number:""} ${value||"فارغة"}">
         ${cell.number?`<span class="num">${cell.number}</span>`:""}<span>${esc(value)}</span>
       </button>`;
     }
@@ -205,7 +209,7 @@ function renderGame(unitId){
         <span>⭐ ${session.score}</span><span>🔥 ${state.streak||0}</span>
       </div>
     </section>
-    <section class="game-layout">
+    <section class="game-layout game-screen">
       <div class="board-column">
         <div class="clue-bar panel">
           <button class="round-btn" id="prev-btn" aria-label="الكلمة السابقة">‹</button>
@@ -217,7 +221,7 @@ function renderGame(unitId){
         </div>
         <section class="letter-bank ${failed?"bank-wrong":""}" aria-label="بنك الحروف">
           <span class="bank-label">اختر الحروف</span>
-          <div class="bank-tiles">${bank.map((letter,i)=>`<button class="letter-tile ${used.includes(i)?"used":""}" data-tile="${i}" data-letter="${esc(letter)}" ${used.includes(i)?"disabled":""}>${esc(letter)}</button>`).join("")}</div>
+          <div class="bank-tiles">${bank.map((letter,i)=>`<button class="letter-tile ${used.includes(i)?"used":""}" style="--tile-delay:${i * 24}ms" data-tile="${i}" data-letter="${esc(letter)}" aria-label="الحرف ${esc(letter)}" ${used.includes(i)?"disabled":""}>${esc(letter)}</button>`).join("")}</div>
         </section>
         <div class="board-tools">
           <button class="btn soft" id="hint-btn">تلميح</button>
@@ -233,17 +237,33 @@ function renderGame(unitId){
   `);
 
   const crosswordEl=document.querySelector(".crossword");
+  const gridWrap=document.querySelector(".grid-wrap");
+  let resizeFrame=0;
   const resizeGrid=()=>{
-    crosswordEl.style.gridTemplateColumns=`repeat(${grid.cols},${innerWidth<=560?32:38}px)`;
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame=requestAnimationFrame(()=>{
+      const available=Math.max(0,gridWrap.clientWidth-18);
+      const size=Math.max(9,Math.min(44,Math.floor((available-(grid.cols-1)*2)/grid.cols)));
+      crosswordEl.style.setProperty("--cell-size",`${size}px`);
+      crosswordEl.style.setProperty("--cell-font",`${Math.max(7,Math.min(17,size*.52))}px`);
+      crosswordEl.style.gridTemplateColumns=`repeat(${grid.cols},var(--cell-size))`;
+    });
   };
   resizeGrid();
+  const gridObserver=new ResizeObserver(resizeGrid);
+  gridObserver.observe(gridWrap);
+  boardResizeCleanup=()=>{cancelAnimationFrame(resizeFrame);gridObserver.disconnect();};
 
   function persist(){
     state.units=state.units||{};
     state.units[unit.id]={...session};
     saveState(state);
   }
-  function refresh(){persist();renderGame(unit.id);}
+  function queueRender(){
+    cancelAnimationFrame(gameRenderFrame);
+    gameRenderFrame=requestAnimationFrame(()=>renderGame(unit.id));
+  }
+  function refresh(){persist();queueRender();}
   function setActive(id,index=0){
     activeWordId=id;
     activeCellIndex=index;
@@ -271,7 +291,7 @@ function renderGame(unitId){
     const next=nextCellInWord(word,activeCellIndex,1);
     activeCellIndex=next===activeCellIndex?activeCellIndex:next;
     checkCompletedWord();
-    if(!gameFeedback) renderGame(unit.id);
+    if(!gameFeedback) queueRender();
   }
   function solveWord(target,force=false){
     if(!session.solved[target.entry.id]){
@@ -298,7 +318,8 @@ function renderGame(unitId){
       setTimeout(()=>renderResult(unit,grid,session),450);
       return true;
     }
-    const next=grid.placed.find(w=>!session.solved[w.entry.id]);
+    const solvedIndex=grid.placed.findIndex(w=>w.entry.id===target.entry.id);
+    const next=Array.from({length:grid.placed.length},(_,i)=>grid.placed[(solvedIndex+i+1)%grid.placed.length]).find(w=>!session.solved[w.entry.id]);
     activeWordId=next?.entry.id||target.entry.id;
     activeCellIndex=0;
     wordStartedAt=Date.now();
@@ -366,7 +387,7 @@ function renderResult(unit,grid,session){
   state=loadState();
   const facts=grid.placed.filter(w=>w.entry.fact).slice(0,5).map(w=>`<div class="fact"><b>${esc(w.entry.answer)}</b><br>${esc(w.entry.fact)}</div>`).join("");
   appEl.innerHTML=shell(`
-    <section class="result panel celebration">
+    <section class="result panel celebration celebration-screen">
       <div class="big">${"★".repeat(session.stars||1)}${"☆".repeat(3-(session.stars||1))}</div>
       <span class="kicker">اكتملت الوحدة ${unit.id}</span>
       <h1 style="font-size:2.5rem;margin:10px 0">${esc(unit.title)}</h1>
@@ -471,6 +492,8 @@ function renderLogin(){
 
 function route(){
   if(boardKeyHandler){document.removeEventListener("keydown",boardKeyHandler);boardKeyHandler=null;}
+  boardResizeCleanup?.();
+  boardResizeCleanup=null;
   const hash=location.hash||"#home";
   if(hash.startsWith("#play/")){renderGame(Number(hash.split("/")[1]));return;}
   if(hash==="#profile"){renderProfile();return;}
